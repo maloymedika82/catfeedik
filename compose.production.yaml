@@ -1,0 +1,103 @@
+name: catfeedik-production
+x-app: &app
+  image: catfeedik-api:local
+  build:
+    context: .
+    dockerfile: deploy/Dockerfile.api
+  env_file: .env.production
+  environment:
+    NO_PROXY: api,postgres,redis,localhost,127.0.0.1
+    APP_ENV: production
+    ALLOW_DEV_LOGIN: "0"
+    ALLOW_DEV_ADMIN: "0"
+    DATABASE_URL: postgresql+psycopg://catfeedik:${POSTGRES_PASSWORD:?Run scripts/init-production.py}@postgres:5432/catfeedik
+    REDIS_URL: redis://redis:6379/0
+    VIDEO_STORAGE_DIR: /data/videos
+  volumes:
+    - videos:/data/videos
+  restart: unless-stopped
+  init: true
+  logging: &logging
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+services:
+  postgres:
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_DB: catfeedik
+      POSTGRES_USER: catfeedik
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run scripts/init-production.py}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+    logging: *logging
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U catfeedik -d catfeedik]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:7.4-alpine
+    command: [redis-server, --appendonly, "yes", --maxmemory, 192mb, --maxmemory-policy, noeviction]
+    volumes:
+      - redis:/data
+    restart: unless-stopped
+    logging: *logging
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  api:
+    <<: *app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:8000/api/health',timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+  worker:
+    <<: *app
+    command: [python, -m, celery, -A, backend.tasks.celery_app, worker, --concurrency=1, --loglevel=WARNING]
+    depends_on:
+      api:
+        condition: service_healthy
+  beat:
+    <<: *app
+    command: [python, -m, celery, -A, backend.tasks.celery_app, beat, --loglevel=WARNING, --schedule=/data/beat/schedule]
+    volumes:
+      - beat:/data/beat
+    depends_on:
+      api:
+        condition: service_healthy
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.web
+    environment:
+      NO_PROXY: api,localhost,127.0.0.1
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN in .env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      api:
+        condition: service_healthy
+volumes:
+  postgres:
+  redis:
+  videos:
+  beat:
+  caddy_data:
+  caddy_config:

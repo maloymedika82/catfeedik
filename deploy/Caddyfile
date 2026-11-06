@@ -1,0 +1,25 @@
+{$APP_DOMAIN} {
+    encode zstd gzip
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy strict-origin-when-cross-origin
+        Strict-Transport-Security "max-age=31536000"
+    }
+    handle /api/* {
+        request_body {
+            max_size 24MB
+        }
+        reverse_proxy api:8000
+    }
+    handle /docs* {
+        respond 404
+    }
+    handle /openapi.json {
+        respond 404
+    }
+    handle {
+        root * /srv
+        try_files {path} /index.html
+        file_server
+    }
+}
