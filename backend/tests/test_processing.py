@@ -214,3 +214,59 @@ def test_invalid_duration_or_missing_sound_never_awards(setup,tmp_path,duration,
     fid=upload_video(client,headers,source.read_bytes())
     assert process_video(fid,factory)['status']=='INVALID'
     assert client.get('/api/me',headers=headers).json()['points']==0
+
+
+def test_png_vision_request_preserves_correct_content_type(tmp_path,monkeypatch):
+    monkeypatch.setenv('AI_API_KEY','unit-test-only');monkeypatch.setenv('AI_MODEL','provider-test')
+    image=tmp_path/'test.png';image.write_bytes(b'png-fixture')
+    def handle(request):
+        payload=json.loads(request.content)
+        image_data=payload['messages'][-1]['content'][-1]['image_url']['url']
+        assert image_data.startswith('data:image/png;base64,')
+        return httpx.Response(200,json={'choices':[{'message':{'content':verdict('REVIEW').model_dump_json()}}]})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        assert moderate([image],client).decision=='REVIEW'
+
+
+def test_provider_http_failure_exposes_status_not_credentials(tmp_path,monkeypatch):
+    monkeypatch.setenv('AI_API_KEY','unit-test-only');monkeypatch.setenv('AI_MODEL','provider-test')
+    image=tmp_path/'test.jpg';image.write_bytes(b'jpeg-fixture')
+    with httpx.Client(transport=httpx.MockTransport(lambda request:httpx.Response(401,json={'error':'private-provider-response'}))) as client:
+        with pytest.raises(ProviderUnavailable) as failure:moderate([image],client)
+    assert '401' in str(failure.value)
+    assert 'private-provider-response' not in str(failure.value)
+    assert 'unit-test-only' not in str(failure.value)
+
+
+def test_local_ai_diagnostic_verifies_actual_image_content(monkeypatch,capsys):
+    import importlib.util
+    import base64
+    import struct
+    import zlib
+    spec=importlib.util.spec_from_file_location('catfeedik_ai_diagnostic',Path(__file__).resolve().parents[2]/'scripts/check-ai.py')
+    diagnostic=importlib.util.module_from_spec(spec);spec.loader.exec_module(diagnostic)
+    monkeypatch.setenv('AI_API_KEY','unit-test-only');monkeypatch.setenv('AI_MODEL','provider-test')
+    calls=[]
+    def handle(request):
+        calls.append(request)
+        payload=json.loads(request.content)
+        if len(calls)==1:
+            encoded=payload['messages'][-1]['content'][-1]['image_url']['url'].split(',',1)[1]
+            png=base64.b64decode(encoded);offset=8;compressed=b''
+            while offset<len(png):
+                size=struct.unpack('!I',png[offset:offset+4])[0]
+                kind=png[offset+4:offset+8]
+                if kind==b'IDAT':compressed+=png[offset+8:offset+8+size]
+                offset+=size+12
+            rows=zlib.decompress(compressed)
+            palette={(255,0,0):'red',(0,255,0):'green',(0,0,255):'blue',(255,255,0):'yellow',(0,0,0):'black',(255,255,255):'white'}
+            colors=[palette[tuple(rows[y*289+1+x*3:y*289+1+x*3+3])] for y in (16,48,80) for x in (16,48,80)]
+            content=json.dumps({'cells':colors})
+        else:content=verdict('REJECT').model_dump_json()
+        return httpx.Response(200,json={'choices':[{'message':{'content':content}}]})
+    actual_client=httpx.Client
+    monkeypatch.setattr(diagnostic.httpx,'Client',lambda **kwargs:actual_client(transport=httpx.MockTransport(handle),**kwargs))
+    assert diagnostic.main()==0
+    output=capsys.readouterr().out
+    assert 'PASS: vision and structured moderation work' in output and 'unit-test-only' not in output
+    assert len(calls)==2

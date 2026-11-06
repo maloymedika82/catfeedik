@@ -61,7 +61,7 @@ def moderate(frames,client=None):
         'Use REVIEW whenever uncertain; sampled frames cannot prove continuity or authenticity. '
         'REJECT only for clear violations. Do not claim to have awarded points.') }]
     for frame in frames:
-        content.append({'type':'image_url','image_url':{'url':'data:image/jpeg;base64,'+base64.b64encode(frame.read_bytes()).decode(),'detail':'low'}})
+        content.append({'type':'image_url','image_url':{'url':('data:image/png;base64,' if frame.suffix.lower()=='.png' else 'data:image/jpeg;base64,')+base64.b64encode(frame.read_bytes()).decode(),'detail':'low'}})
     own_client=client is None
     client=client or httpx.Client(timeout=60,follow_redirects=False)
     try:
@@ -78,6 +78,8 @@ def moderate(frames,client=None):
         if verdict.decision=='REJECT' and verdict.confidence<.95:
             verdict.decision='REVIEW'
         return verdict
+    except httpx.HTTPStatusError as error:
+        raise ProviderUnavailable(f'AI-провайдер вернул HTTP {error.response.status_code}; проверьте модель, права ключа и баланс') from None
     except (httpx.HTTPError,KeyError,IndexError,TypeError,ValueError,ValidationError):
         # Never include provider response bodies, headers or credentials in errors.
         raise ProviderUnavailable('AI-провайдер недоступен или вернул некорректный ответ') from None
