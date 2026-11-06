@@ -1,3 +1,7 @@
+import asyncio
+import errno
+import tempfile
+from pathlib import Path
 import hashlib
 import math
 import os
@@ -5,18 +9,20 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
-import boto3
-from botocore.config import Config
-from fastapi import FastAPI, Depends, HTTPException, Header
-from pydantic import BaseModel, Field, ConfigDict
+from fastapi import FastAPI, Depends, HTTPException, Header, Request, Response, Cookie
+from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field
 from sqlalchemy import select, func, update
 from sqlalchemy.orm import Session as DBSession
 from .auth import verify_init_data
+from .local_storage import storage_root, object_path, check_space, publish_file, cleanup_abandoned_uploads
 from .db import Base, engine, get_db, User, Session, Feeding, Points, Audit, Leaderboard, SnapshotRun, uid
 
 @asynccontextmanager
 async def lifespan(app):
     Base.metadata.create_all(engine)  # Initial development schema; versioned migrations required before production.
+    cleanup_abandoned_uploads(storage_root())
     yield
 
 app = FastAPI(title='Catfeedik API', version='0.1.0', lifespan=lifespan)
@@ -43,14 +49,23 @@ def active(user):
     if user.frozen:
         raise HTTPException(403, 'Аккаунт заморожен. Обратитесь в поддержку.')
 
-def storage():
-    names = ('R2_ENDPOINT_URL','R2_ACCESS_KEY_ID','R2_SECRET_ACCESS_KEY','R2_BUCKET')
-    if not all(os.getenv(name) for name in names):
-        raise HTTPException(503, 'Хранилище видео ещё не подключено')
-    endpoint = os.environ['R2_ENDPOINT_URL']
-    if not endpoint.startswith('https://'):
-        raise HTTPException(503, 'R2 требует HTTPS')
-    return boto3.client('s3',endpoint_url=endpoint,aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],region_name='auto',config=Config(signature_version='s3v4'))
+def video_limit():
+    raw=os.getenv('MAX_VIDEO_BYTES')
+    if not raw:
+        return None
+    try:
+        amount=int(raw)
+        if amount<=0:
+            raise ValueError
+        return amount
+    except ValueError:
+        raise HTTPException(503, 'Лимит видео должен быть положительным числом байт') from None
+
+
+def media_cookie(response,token):
+    response.set_cookie('catfeedik_media',token,max_age=86400,httponly=True,
+                        secure=os.getenv('APP_ENV')!='development',samesite='strict',path='/api/media')
+
 
 def totals(db, user_id):
     points = db.scalar(select(func.coalesce(func.sum(Points.delta),0)).where(Points.user_id==user_id))
@@ -68,19 +83,20 @@ def health(db: DB):
 
 @app.get('/api/config')
 def config():
-    return {'telegram_configured':bool(os.getenv('TELEGRAM_BOT_TOKEN')),'storage_configured':all(os.getenv(n) for n in ('R2_ENDPOINT_URL','R2_ACCESS_KEY_ID','R2_SECRET_ACCESS_KEY','R2_BUCKET')),'demo_login_enabled':os.getenv('APP_ENV')=='development' and os.getenv('ALLOW_DEV_LOGIN')=='1','location_rules_configured':all(os.getenv(n) for n in ('LOCATION_RADIUS_METERS','MAX_GPS_ACCURACY_METERS')),'max_video_bytes':int(os.environ['MAX_VIDEO_BYTES']) if os.getenv('MAX_VIDEO_BYTES') else None,'ai_configured':False}
+    return {'telegram_configured':bool(os.getenv('TELEGRAM_BOT_TOKEN')),'storage_configured':bool(storage_root()),'storage_backend':'local','demo_login_enabled':os.getenv('APP_ENV')=='development' and os.getenv('ALLOW_DEV_LOGIN')=='1','location_rules_configured':all(os.getenv(n) for n in ('LOCATION_RADIUS_METERS','MAX_GPS_ACCURACY_METERS')),'max_video_bytes':video_limit(),'ai_configured':False}
 
 class Login(BaseModel):
     init_data: str = Field(min_length=1,max_length=16000)
 
-def login_result(db,user):
+def login_result(db,user,response):
     token = secrets.token_urlsafe(32)
     db.add(Session(token_hash=hashlib.sha256(token.encode()).hexdigest(),user_id=user.id,expires_at=int(time.time())+86400))
     db.commit()
+    media_cookie(response,token)
     return {'access_token':token,'user':profile(db,user)}
 
 @app.post('/api/auth/telegram')
-def telegram_login(data: Login,db: DB):
+def telegram_login(data: Login,response: Response,db: DB):
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     if not token:
         raise HTTPException(503,'Telegram-бот ещё не подключён')
@@ -95,22 +111,23 @@ def telegram_login(data: Login,db: DB):
         db.flush()
     owner_ids={int(v) for v in os.getenv('OWNER_TELEGRAM_IDS','').split(',') if v.strip().isdigit()}
     user.role='OWNER' if tg['id'] in owner_ids else ('USER' if user.role=='OWNER' else user.role)
-    return login_result(db,user)
+    return login_result(db,user,response)
 
 @app.post('/api/auth/dev')
-def dev_login(db: DB):
+def dev_login(response: Response,db: DB):
     if os.getenv('APP_ENV')!='development' or os.getenv('ALLOW_DEV_LOGIN')!='1':
         raise HTTPException(404,'Not found')
     user=db.scalar(select(User).where(User.telegram_id==-1))
     if not user:
         user=User(telegram_id=-1,name='Тестовый участник',city='Москва')
         db.add(user);db.flush()
-    return login_result(db,user)
+    return login_result(db,user,response)
 
 @app.post('/api/auth/logout',status_code=204)
-def logout(db: DB,user: CurrentUser,authorization: Annotated[str,Header()]):
+def logout(response: Response,db: DB,user: CurrentUser,authorization: Annotated[str,Header()]):
     item=db.get(Session,hashlib.sha256(authorization[7:].encode()).hexdigest())
     db.delete(item);db.commit()
+    response.delete_cookie('catfeedik_media',path='/api/media')
 
 @app.get('/api/me')
 def me(db: DB,user: CurrentUser):
@@ -183,42 +200,112 @@ class Upload(BaseModel):
 @app.post('/api/feedings')
 def create_feeding(data: Upload,db: DB,user: CurrentUser):
     active(user)
-    if not os.getenv('MAX_VIDEO_BYTES'):
+    limit=video_limit()
+    if not limit:
         raise HTTPException(503,'Лимит видео ещё не утверждён')
-    if data.size>int(os.environ['MAX_VIDEO_BYTES']):
+    if data.size>limit:
         raise HTTPException(413,'Видео превышает допустимый размер')
     # Lock per participant to serialize retries and concurrent requests.
     locked_user=db.execute(select(User).where(User.id==user.id).with_for_update().execution_options(populate_existing=True)).scalar_one()
     active(locked_user)
     feeding=db.scalar(select(Feeding).where(Feeding.user_id==user.id,Feeding.request_key==data.request_key))
     if feeding and feeding.status!='UPLOADING':
-        return {'id':feeding.id,'status':feeding.status,'upload_url':None}
+        return {'id':feeding.id,'status':feeding.status,'upload_path':None}
     if feeding and any(getattr(feeding,k)!=v for k,v in data.model_dump().items() if k!='request_key'):
         raise HTTPException(409,'Повторная загрузка должна содержать тот же файл и метаданные')
-    client=storage()
+    root=storage_root()
+    check_space(root,data.size)
     if not feeding:
         feeding=Feeding(id=uid(),user_id=user.id,**data.model_dump(),object_key=f'originals/{user.id}/{uid()}')
         db.add(feeding);db.flush()
-    url=client.generate_presigned_url('put_object',Params={'Bucket':os.environ['R2_BUCKET'],'Key':feeding.object_key,'ContentType':feeding.mime_type,'ContentLength':feeding.size,'IfNoneMatch':'*'},ExpiresIn=900)
     db.commit()
-    return {'id':feeding.id,'status':feeding.status,'upload_url':url}
+    return {'id':feeding.id,'status':feeding.status,'upload_path':f'/feedings/{feeding.id}/content'}
+
+
+def prepare_upload(db,user_id,feeding_id):
+    feeding=db.scalar(select(Feeding).where(Feeding.id==feeding_id,Feeding.user_id==user_id))
+    if not feeding:
+        raise HTTPException(404, 'Видео не найдено')
+    if feeding.status!='UPLOADING':
+        raise HTTPException(409, 'Видео уже передано на проверку')
+    expected,mime=feeding.size,feeding.mime_type
+    db.rollback()  # Do not keep a transaction/row lock open while waiting for the client.
+    return expected,mime
+
+
+def finish_upload(db,user_id,feeding_id,staged,digest):
+    participant=db.scalar(select(User).where(User.id==user_id).with_for_update().execution_options(populate_existing=True))
+    active(participant)
+    feeding=db.scalar(select(Feeding).where(Feeding.id==feeding_id,Feeding.user_id==user_id).with_for_update().execution_options(populate_existing=True))
+    if not feeding or feeding.status!='UPLOADING':
+        raise HTTPException(409, 'Видео больше не принимает загрузку')
+    publish_file(staged,feeding.object_key,digest)
+    db.commit()
+
+
+@app.put('/api/feedings/{feeding_id}/content',status_code=204)
+async def upload_content(feeding_id:str,request: Request,db: DB,user: CurrentUser):
+    active(user)
+    user_id=user.id
+    expected,mime=await run_in_threadpool(prepare_upload,db,user_id,feeding_id)
+    limit=video_limit()
+    if not limit:
+        raise HTTPException(503, 'Лимит видео ещё не утверждён')
+    if expected>limit:
+        raise HTTPException(413, 'Видео превышает допустимый размер')
+    if request.headers.get('content-type','').split(';',1)[0].strip().lower()!=mime:
+        raise HTTPException(415, 'Тип файла не совпадает с сессией записи')
+    length=request.headers.get('content-length')
+    if length is not None:
+        try:
+            if int(length)!=expected:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(422, 'Размер файла не совпадает с сессией записи') from None
+    root=storage_root()
+    check_space(root,expected)
+    staged=None
+    try:
+        with tempfile.NamedTemporaryFile(dir=root/'_incoming',suffix='.part',delete=False) as output:
+            staged=Path(output.name)
+            total=0
+            digest=hashlib.sha256()
+            async with asyncio.timeout(120):
+                async for chunk in request.stream():
+                    total+=len(chunk)
+                    if total>expected or total>limit:
+                        raise HTTPException(413, 'Загрузка превысила допустимый размер')
+                    if chunk:
+                        await run_in_threadpool(check_space,root,len(chunk))
+                        await run_in_threadpool(output.write,chunk)
+                        digest.update(chunk)
+            if total!=expected:
+                raise HTTPException(422, 'Видео загружено не полностью. Повторите отправку.')
+            await run_in_threadpool(output.flush)
+            await run_in_threadpool(os.fsync,output.fileno())
+        await run_in_threadpool(finish_upload,db,user_id,feeding_id,staged,digest.hexdigest())
+    except TimeoutError:
+        raise HTTPException(408, 'Время загрузки истекло. Повторите отправку.') from None
+    except OSError as exc:
+        raise HTTPException(507 if exc.errno in (errno.ENOSPC,errno.EDQUOT) else 503,
+                            'Не удалось сохранить видео на диске') from None
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
+
 
 @app.post('/api/feedings/{feeding_id}/complete')
 def complete(feeding_id:str,db: DB,user: CurrentUser):
-    active(user)
-    feeding=db.scalar(select(Feeding).where(Feeding.id==feeding_id,Feeding.user_id==user.id).with_for_update())
+    participant=db.scalar(select(User).where(User.id==user.id).with_for_update().execution_options(populate_existing=True))
+    active(participant)
+    feeding=db.scalar(select(Feeding).where(Feeding.id==feeding_id,Feeding.user_id==user.id).with_for_update().execution_options(populate_existing=True))
     if not feeding:
         raise HTTPException(404,'Видео не найдено')
     if feeding.status!='UPLOADING':
         return {'id':feeding.id,'status':feeding.status}
-    try:
-        head=storage().head_object(Bucket=os.environ['R2_BUCKET'],Key=feeding.object_key)
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(409,'Не удалось подтвердить загрузку. Повторите запрос.') from None
-    if head['ContentLength']!=feeding.size or head.get('ContentType')!=feeding.mime_type:
-        raise HTTPException(422,'Метаданные загруженного файла не совпадают')
+    path=object_path(feeding.object_key)
+    if not path.is_file() or path.stat().st_size!=feeding.size:
+        raise HTTPException(409,'Видео не загружено полностью. Повторите отправку.')
     feeding.status='REVIEW' # Human verification until FFmpeg and AI worker are connected.
     db.commit()
     return {'id':feeding.id,'status':feeding.status}
@@ -279,9 +366,7 @@ def admin_feeding(feeding_id:str,db: DB,admin: Admin):
     feeding=db.get(Feeding,feeding_id)
     if not feeding:
         raise HTTPException(404,'Видео не найдено')
-    # Raw media stays private. A short-lived link is issued only to administrators.
-    client=storage()
-    url=client.generate_presigned_url('get_object',Params={'Bucket':os.environ['R2_BUCKET'],'Key':feeding.object_key},ExpiresIn=300)
+    url=f'/api/media/{feeding.id}'
     participant=db.get(User,feeding.user_id)
     return {'id':feeding.id,'status':feeding.status,'city':feeding.city,'name':participant.name,'claimed_by':feeding.claimed_by,'video_url':url,'created_at':feeding.created_at,'reason':feeding.decision_reason,'ai_status':'NOT_CONNECTED'}
 
@@ -313,3 +398,28 @@ def release(feeding_id:str,db: DB,admin: Admin):
     db.add(Audit(actor_id=admin.id,action='RELEASE',target=feeding_id,reason='Возврат в общую очередь'))
     db.commit()
     return {'status':'REVIEW'}
+
+
+@app.get('/api/media/{feeding_id}')
+def private_media(feeding_id:str,db: DB,
+                  authorization: Annotated[str | None,Header()]=None,
+                  media_session: Annotated[str | None,Cookie(alias='catfeedik_media')]=None):
+    # Video elements cannot set bearer headers. Their same-origin HttpOnly cookie
+    # is scoped to this read-only route; write endpoints still require bearer auth.
+    token=authorization[7:] if authorization and authorization.startswith('Bearer ') else media_session
+    if not token:
+        raise HTTPException(401,'Войдите через Telegram')
+    session=db.get(Session,hashlib.sha256(token.encode()).hexdigest())
+    if not session or session.expires_at<=int(time.time()):
+        raise HTTPException(401,'Сессия истекла')
+    user=db.get(User,session.user_id)
+    feeding=db.get(Feeding,feeding_id)
+    if not feeding or (feeding.user_id!=user.id and user.role not in ('ADMIN','OWNER')):
+        raise HTTPException(404,'Видео не найдено')
+    if feeding.status=='UPLOADING':
+        raise HTTPException(409,'Видео ещё не отправлено на проверку')
+    path=object_path(feeding.object_key)
+    if not path.is_file():
+        raise HTTPException(404,'Файл видео не найден на сервере')
+    return FileResponse(path,media_type=feeding.mime_type,
+                        headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})

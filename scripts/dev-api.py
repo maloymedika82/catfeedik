@@ -7,7 +7,7 @@ os.chdir(root)
 for name in ('.env','.local/services.env'):
     path=root/name
     if path.exists():
-        for line in path.read_text().splitlines():
+        for line in path.read_text(encoding='utf-8-sig').splitlines():
             if not line.strip() or line.lstrip().startswith('#') or '=' not in line:
                 continue
             key,value=line.split('=',1)
