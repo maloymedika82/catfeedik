@@ -270,3 +270,17 @@ def test_local_ai_diagnostic_verifies_actual_image_content(monkeypatch,capsys):
     output=capsys.readouterr().out
     assert 'PASS: vision and structured moderation work' in output and 'unit-test-only' not in output
     assert len(calls)==2
+
+
+def test_provider_429_diagnostics_classify_and_hide_raw_values():
+    from backend.ai import provider_error_details
+    for message,category in [('Rate limit exceeded: private-test-key','request_rate_limit'),
+                             ('insufficient_quota private-test-key','quota_or_balance'),
+                             ('No available model capacity private-test-key','model_capacity'),
+                             ('opaque private-test-key','not_specified')]:
+        response=httpx.Response(429,text=message,headers={'Retry-After':'60'})
+        result=provider_error_details(response)
+        assert result=={'status':429,'category':category,'retry_after_seconds':60}
+        assert 'private-test-key' not in json.dumps(result)
+    response=httpx.Response(429,text='opaque',headers={'Retry-After':'private-test-key'})
+    assert 'retry_after_seconds' not in provider_error_details(response)

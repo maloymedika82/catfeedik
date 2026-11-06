@@ -13,7 +13,7 @@ import httpx
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from backend.settings import load_environment
 load_environment()
-from backend.ai import configured,base_url,resolve_model,moderate,ProviderUnavailable
+from backend.ai import configured,base_url,resolve_model,moderate,ProviderUnavailable,provider_error_details
 
 
 def make_grid():
@@ -27,6 +27,13 @@ def make_grid():
     return png,expected
 
 
+def print_provider_details(details):
+    print('Provider category: '+details.get('category','not_specified'))
+    if 'retry_after_seconds' in details:
+        print('Retry after (seconds): '+str(details['retry_after_seconds']))
+    print('No automatic retries were made. Raw provider response and keys remain private.')
+
+
 def main():
     if not configured():
         print('FAIL: AI_API_KEY is missing. Add it to your private .env; do not send it in chat.')
@@ -36,6 +43,7 @@ def main():
         png,expected=make_grid()
         with httpx.Client(timeout=60,follow_redirects=False) as client:
             model=resolve_model(client)
+            print('Model: '+model)
             response=client.post(base_url()+'/chat/completions',headers={'Authorization':'Bearer '+os.environ['AI_API_KEY']},json={
                 'model':model,'temperature':0,'max_tokens':200,'response_format':{'type':'json_object'},
                 'messages':[{'role':'user','content':[
@@ -43,7 +51,6 @@ def main():
                     {'type':'image_url','image_url':{'url':'data:image/png;base64,'+base64.b64encode(png).decode(),'detail':'low'}}]}]})
             response.raise_for_status()
             actual=json.loads(response.json()['choices'][0]['message']['content']).get('cells')
-            print('Model: '+model)
             if actual!=expected:
                 print('FAIL: provider answered, but the random visual challenge was not read correctly. Image support is not confirmed.')
                 return 1
@@ -63,10 +70,12 @@ def main():
         print('PASS: vision and structured moderation work. Test image was not approved. No points were awarded.')
         return 0
     except httpx.HTTPStatusError as error:
-        print(f'FAIL: provider returned HTTP {error.response.status_code}. Check model, key permissions and balance. Response body was not printed.')
+        print(f'FAIL: provider returned HTTP {error.response.status_code}.')
+        print_provider_details(provider_error_details(error.response))
         return 1
     except ProviderUnavailable as error:
         print('FAIL: '+str(error))
+        if error.details:print_provider_details(error.details)
         return 1
     except Exception:
         print('FAIL: could not validate the provider response. Credentials and response bodies were not printed.')

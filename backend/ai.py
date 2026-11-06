@@ -2,6 +2,9 @@
 import base64
 import json
 import os
+import math
+import time
+from email.utils import parsedate_to_datetime
 import httpx
 from pydantic import BaseModel,Field,ValidationError,ConfigDict
 from typing import Literal
@@ -18,7 +21,32 @@ class Verdict(BaseModel):
     provider_model: str=Field(default='',exclude=True)
 
 class ProviderUnavailable(RuntimeError):
-    pass
+    def __init__(self,message,details=None):
+        super().__init__(message)
+        self.details=details or {}
+
+
+def provider_error_details(response):
+    """Return fixed categories and a parsed wait time, never provider text/credentials."""
+    text=response.text[:8192].lower()
+    if any(word in text for word in ('insufficient_quota','insufficient_balance','billing','credit balance','quota exceeded','exceeded your current quota','недостаточно средств','баланс')):
+        category='quota_or_balance'
+    elif any(word in text for word in ('rate_limit','rate limit','ratelimit','too many requests','requests per minute','tokens per minute','лимит запросов')):
+        category='request_rate_limit'
+    elif any(word in text for word in ('capacity','overload','busy','no available','перегруз','нет доступных')):
+        category='model_capacity'
+    elif 'resource_exhausted' in text:
+        category='quota_or_capacity'
+    else:
+        category='not_specified'
+    details={'status':response.status_code,'category':category}
+    header=response.headers.get('retry-after','').strip()
+    try:
+        seconds=int(header) if header.isascii() and header.isdecimal() else math.ceil(parsedate_to_datetime(header).timestamp()-time.time())
+        if 0<=seconds<=31536000:details['retry_after_seconds']=seconds
+    except (ValueError,TypeError,OverflowError):
+        pass
+    return details
 
 
 def configured():
@@ -79,7 +107,7 @@ def moderate(frames,client=None):
             verdict.decision='REVIEW'
         return verdict
     except httpx.HTTPStatusError as error:
-        raise ProviderUnavailable(f'AI-провайдер вернул HTTP {error.response.status_code}; проверьте модель, права ключа и баланс') from None
+        raise ProviderUnavailable(f'AI-провайдер вернул HTTP {error.response.status_code}; проверьте модель, права ключа и баланс',provider_error_details(error.response)) from None
     except (httpx.HTTPError,KeyError,IndexError,TypeError,ValueError,ValidationError):
         # Never include provider response bodies, headers or credentials in errors.
         raise ProviderUnavailable('AI-провайдер недоступен или вернул некорректный ответ') from None
