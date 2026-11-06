@@ -162,3 +162,5 @@ Owner может остановить/включить автоматическ�
 ## Сервер и Telegram
 
 Подготовлен отдельный серверный Compose с Caddy/HTTPS, React-сборкой, API/FFmpeg, Worker, Beat, PostgreSQL и Redis. Инструкция: [docs/deployment.md](docs/deployment.md). Для создания приватного шаблона используйте `python3 scripts/init-production.py`. Публичное развёртывание требует VPS и домен; сервер не создан автоматически.
+
+Для открытия Telegram Mini App с домашнего Windows-компьютера без VPS: [локальный запуск через HTTPS-туннель](docs/telegram-local.md), скрипт `scripts\start-telegram-local.cmd`. Тестовые входы отключаются; ngrok подключается отдельно на самом компьютере.
