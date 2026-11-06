@@ -1,0 +1,10 @@
+{
+  "id": "matte-dock-navigation",
+  "variant": "dock-navigation",
+  "sha256": {
+    "index.html": "7ae6130017884c296c6add2c899062d5682ea7b007c10538cc3434bc234fe6c5",
+    "buttons.css": "c38027cac0b78b8c51d5b0bf0a8fd969747a9921349e4a7ff6ee72f440f792a9",
+    "buttons.js": "ed086ac9b71a80cbc9ea8a66749d4f691c5e1d8fdcd03c2668dba2e30b3e19bb",
+    "example.js": "b6c3325d07479cb1fc05ee30e19c2dce1c58f25b400ea23ca11d670854f0c806"
+  }
+}

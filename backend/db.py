@@ -1,0 +1,98 @@
+import os
+import time
+import uuid
+from sqlalchemy import create_engine, event, ForeignKey, UniqueConstraint, String, BigInteger, Float, Boolean, Integer, Text
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+
+class Base(DeclarativeBase):
+    pass
+
+def uid():
+    return str(uuid.uuid4())
+
+class User(Base):
+    __tablename__ = 'users'
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=uid)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    name: Mapped[str] = mapped_column(String(200))
+    city: Mapped[str] = mapped_column(String(100), default='')
+    language: Mapped[str] = mapped_column(String(2), default='ru')
+    frozen: Mapped[bool] = mapped_column(Boolean, default=False)
+    role: Mapped[str] = mapped_column(String, default='USER')
+    wallet: Mapped[str] = mapped_column(String(200), default='')
+    created_at: Mapped[int] = mapped_column(BigInteger, default=lambda: int(time.time()))
+
+class Session(Base):
+    __tablename__ = 'sessions'
+    token_hash: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    expires_at: Mapped[int] = mapped_column(BigInteger)
+
+class Feeding(Base):
+    __tablename__ = 'feedings'
+    __table_args__ = (UniqueConstraint('user_id', 'request_key'),)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=uid)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
+    request_key: Mapped[str] = mapped_column(String(80))
+    status: Mapped[str] = mapped_column(String, default='UPLOADING', index=True)
+    city: Mapped[str] = mapped_column(String(100))
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    accuracy: Mapped[float] = mapped_column(Float)
+    mime_type: Mapped[str] = mapped_column(String)
+    size: Mapped[int] = mapped_column(BigInteger)
+    object_key: Mapped[str] = mapped_column(String, unique=True)
+    created_at: Mapped[int] = mapped_column(BigInteger, default=lambda: int(time.time()))
+    claimed_by: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
+    decision_reason: Mapped[str] = mapped_column(Text, default='')
+
+class Points(Base):
+    __tablename__ = 'points_ledger'
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=uid)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
+    event_key: Mapped[str] = mapped_column(String, unique=True)
+    delta: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String)
+    created_at: Mapped[int] = mapped_column(BigInteger, default=lambda: int(time.time()))
+
+class Audit(Base):
+    __tablename__ = 'admin_logs'
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=uid)
+    actor_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    action: Mapped[str] = mapped_column(String)
+    target: Mapped[str] = mapped_column(String)
+    reason: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[int] = mapped_column(BigInteger, default=lambda: int(time.time()))
+
+class Leaderboard(Base):
+    __tablename__ = 'leaderboard_snapshots'
+    __table_args__ = (UniqueConstraint('hour', 'user_id'),)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=uid)
+    hour: Mapped[int] = mapped_column(BigInteger, index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    rank: Mapped[int] = mapped_column(Integer)
+    points: Mapped[int] = mapped_column(Integer)
+    feedings: Mapped[int] = mapped_column(Integer)
+
+url = os.getenv('DATABASE_URL', 'sqlite:///./.local/catfeedik.db')
+if url.startswith('sqlite:'):
+    os.makedirs('.local', exist_ok=True)
+engine = create_engine(url, connect_args={'check_same_thread': False} if url.startswith('sqlite:') else {}, pool_pre_ping=True)
+if url.startswith('sqlite:'):
+    @event.listens_for(engine, 'connect')
+    def sqlite_pragmas(connection, _):
+        connection.execute('PRAGMA foreign_keys=ON')
+        connection.execute('PRAGMA busy_timeout=5000')
+SessionLocal = sessionmaker(engine, expire_on_commit=False)
+
+def get_db():
+    with SessionLocal() as db:
+        try:
+            yield db
+        except Exception:
+            db.rollback()
+            raise
+
+class SnapshotRun(Base):
+    __tablename__ = 'leaderboard_runs'
+    hour: Mapped[int] = mapped_column(BigInteger,primary_key=True)

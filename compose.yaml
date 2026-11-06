@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_DB: catfeedik
+      POSTGRES_USER: catfeedik
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run scripts/init-local.py first}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U catfeedik -d catfeedik"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 1g
+  redis:
+    image: redis:7.4-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 256m
+volumes:
+  postgres_data:
+  redis_data:
