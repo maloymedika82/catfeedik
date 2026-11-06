@@ -15,9 +15,13 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func, update
 from sqlalchemy.orm import Session as DBSession
+from .settings import product_number
+from .geography import nearest_city,city_info
+from .awards import award
+from .ai import configured as ai_configured
 from .auth import verify_init_data
 from .local_storage import storage_root, object_path, check_space, publish_file, cleanup_abandoned_uploads
-from .db import Base, engine, get_db, User, Session, Feeding, Points, Audit, Leaderboard, SnapshotRun, uid
+from .db import Base, engine, get_db, User, Session, Feeding, Points, Audit, Leaderboard, SnapshotRun, VideoAsset, AICheck, Like, uid
 
 @asynccontextmanager
 async def lifespan(app):
@@ -50,16 +54,11 @@ def active(user):
         raise HTTPException(403, 'Аккаунт заморожен. Обратитесь в поддержку.')
 
 def video_limit():
-    raw=os.getenv('MAX_VIDEO_BYTES')
-    if not raw:
-        return None
     try:
-        amount=int(raw)
-        if amount<=0:
-            raise ValueError
-        return amount
+        value=product_number('MAX_VIDEO_BYTES',20*1024*1024)
+        return int(value) if value else None
     except ValueError:
-        raise HTTPException(503, 'Лимит видео должен быть положительным числом байт') from None
+        raise HTTPException(503,'Лимит видео должен быть положительным числом байт') from None
 
 
 def media_cookie(response,token):
@@ -83,7 +82,7 @@ def health(db: DB):
 
 @app.get('/api/config')
 def config():
-    return {'telegram_configured':bool(os.getenv('TELEGRAM_BOT_TOKEN')),'storage_configured':bool(storage_root()),'storage_backend':'local','demo_login_enabled':os.getenv('APP_ENV')=='development' and os.getenv('ALLOW_DEV_LOGIN')=='1','location_rules_configured':all(os.getenv(n) for n in ('LOCATION_RADIUS_METERS','MAX_GPS_ACCURACY_METERS')),'max_video_bytes':video_limit(),'ai_configured':False}
+    return {'telegram_configured':bool(os.getenv('TELEGRAM_BOT_TOKEN')),'storage_configured':bool(storage_root()),'storage_backend':'local','demo_login_enabled':os.getenv('APP_ENV')=='development' and os.getenv('ALLOW_DEV_LOGIN')=='1','location_rules_configured':bool(product_number('LOCATION_RADIUS_METERS',100) and product_number('MAX_GPS_ACCURACY_METERS',50)),'max_video_bytes':video_limit(),'ai_configured':ai_configured(),'money_enabled':False,'bot_username':os.getenv('TELEGRAM_BOT_USERNAME') or 'animalfeedikbot'}
 
 class Login(BaseModel):
     init_data: str = Field(min_length=1,max_length=16000)
@@ -109,7 +108,7 @@ def telegram_login(data: Login,response: Response,db: DB):
         user=User(telegram_id=tg['id'],name=tg.get('first_name','Участник')[:200],language='en' if tg.get('language_code','').startswith('en') else 'ru')
         db.add(user)
         db.flush()
-    owner_ids={int(v) for v in os.getenv('OWNER_TELEGRAM_IDS','').split(',') if v.strip().isdigit()}
+    owner_ids={int(v) for v in (os.getenv('OWNER_TELEGRAM_IDS') or '2022054034').split(',') if v.strip().isdigit()}
     user.role='OWNER' if tg['id'] in owner_ids else ('USER' if user.role=='OWNER' else user.role)
     return login_result(db,user,response)
 
@@ -159,9 +158,22 @@ def stats(db: DB):
     approved=Feeding.status=='APPROVED'
     return {'participants':db.scalar(select(func.count()).select_from(User)), 'feedings':db.scalar(select(func.count()).select_from(Feeding).where(approved)), 'cities':db.scalar(select(func.count(func.distinct(Feeding.city))).where(approved))}
 
+@app.get('/api/location/city')
+def locate_city(latitude:float,longitude:float):
+    if not math.isfinite(latitude) or not math.isfinite(longitude) or not -90<=latitude<=90 or not -180<=longitude<=180:
+        raise HTTPException(422,'Недопустимые координаты')
+    return nearest_city(latitude,longitude)
+
 @app.get('/api/cities')
 def cities(db: DB):
-    return [dict(name=name,feedings=count) for name,count in db.execute(select(Feeding.city,func.count()).where(Feeding.status=='APPROVED').group_by(Feeding.city))]
+    rows=db.execute(select(VideoAsset.city_id,func.count()).join(Feeding,Feeding.id==VideoAsset.feeding_id)
+          .join(User,User.id==Feeding.user_id).where(Feeding.status=='APPROVED',VideoAsset.status=='READY',User.frozen==False)
+          .group_by(VideoAsset.city_id)).all()
+    result=[]
+    for city_id,count in rows:
+        city=city_info(city_id)
+        if city:result.append({**city,'feedings':count})
+    return result
 
 @app.get('/api/leaderboard')
 def leaderboard(db: DB,offset:int=0,limit:int=50):
@@ -211,12 +223,13 @@ def create_feeding(data: Upload,db: DB,user: CurrentUser):
     feeding=db.scalar(select(Feeding).where(Feeding.user_id==user.id,Feeding.request_key==data.request_key))
     if feeding and feeding.status!='UPLOADING':
         return {'id':feeding.id,'status':feeding.status,'upload_path':None}
-    if feeding and any(getattr(feeding,k)!=v for k,v in data.model_dump().items() if k!='request_key'):
+    if feeding and any(getattr(feeding,k)!=v for k,v in data.model_dump().items() if k not in ('request_key','city')):
         raise HTTPException(409,'Повторная загрузка должна содержать тот же файл и метаданные')
     root=storage_root()
     check_space(root,data.size)
     if not feeding:
-        feeding=Feeding(id=uid(),user_id=user.id,**data.model_dump(),object_key=f'originals/{user.id}/{uid()}')
+        payload=data.model_dump();payload['city']=nearest_city(data.latitude,data.longitude)['label']
+        feeding=Feeding(id=uid(),user_id=user.id,**payload,object_key=f'originals/{user.id}/{uid()}')
         db.add(feeding);db.flush()
     db.commit()
     return {'id':feeding.id,'status':feeding.status,'upload_path':f'/feedings/{feeding.id}/content'}
@@ -306,7 +319,8 @@ def complete(feeding_id:str,db: DB,user: CurrentUser):
     path=object_path(feeding.object_key)
     if not path.is_file() or path.stat().st_size!=feeding.size:
         raise HTTPException(409,'Видео не загружено полностью. Повторите отправку.')
-    feeding.status='REVIEW' # Human verification until FFmpeg and AI worker are connected.
+    feeding.status='PROCESSING'
+    db.add(VideoAsset(feeding_id=feeding.id,city_id=nearest_city(feeding.latitude,feeding.longitude)['id']))
     db.commit()
     return {'id':feeding.id,'status':feeding.status}
 
@@ -327,11 +341,6 @@ class Decision(BaseModel):
     reason: str = Field(min_length=3,max_length=2000)
 
 
-def distance(a,b):
-    lat1,lon1,lat2,lon2=map(math.radians,(a.latitude,a.longitude,b.latitude,b.longitude))
-    h=math.sin((lat2-lat1)/2)**2+math.cos(lat1)*math.cos(lat2)*math.sin((lon2-lon1)/2)**2
-    return 6371000*2*math.asin(min(1,math.sqrt(h)))
-
 @app.post('/api/admin/feedings/{feeding_id}/decision')
 def decide(feeding_id:str,data: Decision,db: DB,admin: Admin):
     # Lock user first consistently across decisions to serialize point thresholds.
@@ -345,17 +354,7 @@ def decide(feeding_id:str,data: Decision,db: DB,admin: Admin):
     if participant.frozen:
         raise HTTPException(409,'Аккаунт заморожен')
     if data.decision=='APPROVED':
-        if not os.getenv('LOCATION_RADIUS_METERS') or not os.getenv('MAX_GPS_ACCURACY_METERS'):
-            raise HTTPException(503,'Радиус локации и точность GPS ещё не утверждены')
-        radius=float(os.environ['LOCATION_RADIUS_METERS']);accuracy=float(os.environ['MAX_GPS_ACCURACY_METERS'])
-        if radius<=0 or accuracy<=0 or feeding.accuracy>accuracy:
-            raise HTTPException(422,'Точность геолокации недостаточна')
-        previous=db.scalars(select(Feeding).where(Feeding.user_id==participant.id,Feeding.status=='APPROVED')).all()
-        if any(abs(feeding.created_at-old.created_at)<7*86400 and distance(feeding,old)<=radius for old in previous):
-            raise HTTPException(409,'Повторный зачёт в этой локации доступен через 7 дней')
-        db.add(Points(user_id=participant.id,event_key=f'feeding:{feeding.id}',delta=10,reason='Подтверждённое кормление'))
-        if len(previous)==4:
-            db.add(Points(user_id=participant.id,event_key=f'five:{participant.id}',delta=5,reason='Бонус за пять кормлений'))
+        award(db,participant,feeding)
     feeding.status=data.decision;feeding.decision_reason=data.reason
     db.add(Audit(actor_id=admin.id,action=data.decision,target=feeding.id,reason=data.reason))
     db.commit()
@@ -368,7 +367,10 @@ def admin_feeding(feeding_id:str,db: DB,admin: Admin):
         raise HTTPException(404,'Видео не найдено')
     url=f'/api/media/{feeding.id}'
     participant=db.get(User,feeding.user_id)
-    return {'id':feeding.id,'status':feeding.status,'city':feeding.city,'name':participant.name,'claimed_by':feeding.claimed_by,'video_url':url,'created_at':feeding.created_at,'reason':feeding.decision_reason,'ai_status':'NOT_CONNECTED'}
+    asset=db.get(VideoAsset,feeding.id);check=db.get(AICheck,feeding.id)
+    return {'processing_status':asset.status if asset else 'PENDING','processing_reason':asset.reason if asset else '',
+            'ai_status':check.status if check else 'NOT_CONFIGURED','ai_reason':check.reason if check else '',
+            'flags':asset.flags if asset else '[]','id':feeding.id,'status':feeding.status,'city':feeding.city,'name':participant.name,'claimed_by':feeding.claimed_by,'video_url':url,'created_at':feeding.created_at,'reason':feeding.decision_reason}
 
 class Freeze(BaseModel):
     frozen: bool
@@ -383,7 +385,7 @@ def freeze(user_id:str,data: Freeze,db: DB,admin: Admin):
         raise HTTPException(403,'Изменение административных аккаунтов здесь недоступно')
     participant.frozen=data.frozen
     if data.frozen:
-        db.execute(update(Feeding).where(Feeding.user_id==participant.id,Feeding.status.in_(['UPLOADING','REVIEW'])).values(status='REJECTED',decision_reason='Аккаунт заморожен: '+data.reason))
+        db.execute(update(Feeding).where(Feeding.user_id==participant.id,Feeding.status.in_(['UPLOADING','PROCESSING','REVIEW'])).values(status='REJECTED',decision_reason='Аккаунт заморожен: '+data.reason))
     db.add(Audit(actor_id=admin.id,action='FREEZE' if data.frozen else 'UNFREEZE',target=participant.id,reason=data.reason))
     db.commit()
     return {'id':participant.id,'frozen':participant.frozen}
@@ -423,3 +425,94 @@ def private_media(feeding_id:str,db: DB,
         raise HTTPException(404,'Файл видео не найден на сервере')
     return FileResponse(path,media_type=feeding.mime_type,
                         headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
+
+
+@app.get('/api/feed')
+def public_feed(db: DB,city_id:str,offset:int=0,limit:int=10):
+    if offset<0 or not 1<=limit<=30:
+        raise HTTPException(422,'Недопустимая страница')
+    rows=db.execute(select(Feeding,VideoAsset,User).join(VideoAsset,VideoAsset.feeding_id==Feeding.id)
+         .join(User,User.id==Feeding.user_id).where(VideoAsset.city_id==city_id,VideoAsset.status=='READY',
+          Feeding.status=='APPROVED',User.frozen==False).order_by(Feeding.created_at.desc(),Feeding.id.desc())
+         .offset(offset).limit(limit+1)).all()
+    return {'items':[{'id':f.id,'name':u.name,'city':f.city,'created_at':f.created_at,
+            'video_url':f'/api/public/videos/{f.id}','poster_url':f'/api/public/videos/{f.id}/poster',
+            'likes':db.scalar(select(func.count()).select_from(Like).where(Like.feeding_id==f.id))}
+            for f,v,u in rows[:limit]],'has_more':len(rows)>limit}
+
+
+def published_asset(db,feeding_id):
+    row=db.execute(select(Feeding,VideoAsset).join(VideoAsset,VideoAsset.feeding_id==Feeding.id)
+         .join(User,User.id==Feeding.user_id).where(Feeding.id==feeding_id,Feeding.status=='APPROVED',
+          VideoAsset.status=='READY',User.frozen==False)).first()
+    if not row:
+        raise HTTPException(404,'Публикация не найдена')
+    return row
+
+@app.get('/api/public/videos/{feeding_id}')
+def public_video(feeding_id:str,db: DB):
+    _,asset=published_asset(db,feeding_id)
+    path=object_path(asset.output_key)
+    if not path.is_file():raise HTTPException(404,'Видео недоступно')
+    return FileResponse(path,media_type='video/mp4',headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
+
+@app.get('/api/public/videos/{feeding_id}/poster')
+def public_poster(feeding_id:str,db: DB):
+    _,asset=published_asset(db,feeding_id)
+    path=object_path(asset.poster_key)
+    if not path.is_file():raise HTTPException(404,'Превью недоступно')
+    return FileResponse(path,media_type='image/jpeg',headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
+
+@app.put('/api/feedings/{feeding_id}/like')
+def like(feeding_id:str,db: DB,user: CurrentUser):
+    locked=db.scalar(select(User).where(User.id==user.id).with_for_update().execution_options(populate_existing=True))
+    active(locked);published_asset(db,feeding_id)
+    if not db.get(Like,(feeding_id,user.id)):db.add(Like(feeding_id=feeding_id,user_id=user.id))
+    db.commit()
+    return {'liked':True,'likes':db.scalar(select(func.count()).select_from(Like).where(Like.feeding_id==feeding_id))}
+
+@app.delete('/api/feedings/{feeding_id}/like')
+def unlike(feeding_id:str,db: DB,user: CurrentUser):
+    locked=db.scalar(select(User).where(User.id==user.id).with_for_update().execution_options(populate_existing=True))
+    active(locked);published_asset(db,feeding_id)
+    item=db.get(Like,(feeding_id,user.id))
+    if item:db.delete(item)
+    db.commit()
+    return {'liked':False,'likes':db.scalar(select(func.count()).select_from(Like).where(Like.feeding_id==feeding_id))}
+
+class RetryProcessing(BaseModel):
+    reason:str=Field(min_length=3,max_length=1000)
+
+@app.post('/api/admin/feedings/{feeding_id}/retry-processing')
+def retry_processing(feeding_id:str,data:RetryProcessing,db: DB,admin: Admin):
+    feeding=db.get(Feeding,feeding_id)
+    if not feeding or feeding.status in ('APPROVED','REJECTED','UPLOADING'):
+        raise HTTPException(409,'Повторная обработка недоступна')
+    if feeding.claimed_by and feeding.claimed_by!=admin.id and admin.role!='OWNER':
+        raise HTTPException(403,'Видео закреплено за другим администратором')
+    asset=db.get(VideoAsset,feeding_id)
+    if asset and asset.status not in ('ERROR','INVALID'):
+        raise HTTPException(409,'Видео уже обработано или находится в работе')
+    if not asset:asset=VideoAsset(feeding_id=feeding_id);db.add(asset)
+    asset.status='PENDING';asset.attempts=0;feeding.status='PROCESSING';feeding.claimed_by=None
+    db.add(Audit(actor_id=admin.id,action='RETRY_PROCESSING',target=feeding_id,reason=data.reason))
+    db.commit()
+    return {'status':'PROCESSING'}
+
+
+@app.get('/api/me/likes')
+def my_likes(db: DB,user: CurrentUser):
+    return list(db.scalars(select(Like.feeding_id).where(Like.user_id==user.id).order_by(Like.created_at.desc()).limit(1000)))
+
+
+@app.post('/api/admin/feedings/{feeding_id}/retry-ai')
+def request_ai_retry(feeding_id:str,data:RetryProcessing,db: DB,admin: Admin):
+    if not ai_configured():raise HTTPException(503,'AI ещё не настроен')
+    check=db.get(AICheck,feeding_id);feeding=db.get(Feeding,feeding_id)
+    if not check or check.status not in ('ERROR','NOT_CONFIGURED') or not feeding or feeding.status!='REVIEW':
+        raise HTTPException(409,'Повторная AI-проверка недоступна')
+    if feeding.claimed_by:raise HTTPException(409,'Сначала Owner должен вернуть видео в очередь')
+    check.status='ERROR';check.attempts=0;check.updated_at=int(time.time())-31
+    db.add(Audit(actor_id=admin.id,action='RETRY_AI',target=feeding_id,reason=data.reason))
+    db.commit()
+    return {'status':'queued'}

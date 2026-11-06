@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from backend.auth import verify_init_data
-from backend.db import Base, User, Feeding, Points, Audit, get_db
+from backend.db import Base, User, Feeding, Points, Audit, VideoAsset, get_db
 from backend.main import app
 
 @pytest.fixture
@@ -66,7 +66,9 @@ def seed_feeding(factory,user_id,number=0):
         if not admin:
             admin=User(telegram_id=999,name='Moderator',role='ADMIN');db.add(admin);db.flush()
         f=Feeding(user_id=user_id,request_key=f'test-request-{number:020}',city='Москва',latitude=55+number*.01,longitude=37,accuracy=10,mime_type='video/mp4',size=10,object_key=f'video-{number}',status='REVIEW',claimed_by=admin.id)
-        db.add(f);db.commit()
+        db.add(f);db.flush()
+        db.add(VideoAsset(feeding_id=f.id,status='READY',city_id='524901'))
+        db.commit()
         return f.id,admin.id
 
 def admin_headers(client,factory,monkeypatch):
@@ -118,7 +120,7 @@ def test_upload_retry_and_completion_are_idempotent(setup,monkeypatch):
     assert uploaded.status_code==204,uploaded.text
     for _ in range(2):
         result=client.post(f"/api/feedings/{first.json()['id']}/complete",headers=headers)
-        assert result.json()['status']=='REVIEW'
+        assert result.json()['status']=='PROCESSING'
     with factory() as db:
         assert len(db.scalars(select(Feeding)).all())==1
         assert len(db.scalars(select(Points)).all())==0
@@ -182,6 +184,7 @@ def test_approval_requires_agreed_location_rules(setup,monkeypatch):
     client,factory=setup;headers=login(client);user=client.get('/api/me',headers=headers).json()
     fid,_=seed_feeding(factory,user['id']);admin=admin_headers(client,factory,monkeypatch)
     monkeypatch.delenv('LOCATION_RADIUS_METERS')
+    monkeypatch.setenv('APP_ENV','production')
     assert client.post(f'/api/admin/feedings/{fid}/decision',headers=admin,json={'decision':'APPROVED','reason':'Проверено'}).status_code==503
     assert client.get('/api/me',headers=headers).json()['points']==0
 
@@ -327,8 +330,10 @@ def test_startup_cleanup_only_old_staging_files(setup):
     root=storage_root();old=root/'_incoming'/'old.part';fresh=root/'_incoming'/'fresh.part';original=root/'keep.mp4'
     for path in (old,fresh,original):path.write_bytes(b'test')
     os.utime(old,(time.time()-90000,time.time()-90000))
+    abandoned=root/'_incoming'/'process-old';abandoned.mkdir();(abandoned/'frame.jpg').write_bytes(b'test')
+    os.utime(abandoned,(time.time()-90000,time.time()-90000))
     cleanup_abandoned_uploads(root)
-    assert not old.exists() and fresh.exists() and original.exists()
+    assert not old.exists() and not abandoned.exists() and fresh.exists() and original.exists()
 
 
 def test_freeze_while_receiving_body_prevents_publish(setup):

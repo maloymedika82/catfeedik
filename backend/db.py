@@ -96,3 +96,35 @@ def get_db():
 class SnapshotRun(Base):
     __tablename__ = 'leaderboard_runs'
     hour: Mapped[int] = mapped_column(BigInteger,primary_key=True)
+
+class VideoAsset(Base):
+    __tablename__ = 'video_assets'
+    feeding_id: Mapped[str] = mapped_column(ForeignKey('feedings.id'),primary_key=True)
+    status: Mapped[str] = mapped_column(String,default='PENDING',index=True)
+    city_id: Mapped[str] = mapped_column(String,default='',index=True)
+    output_key: Mapped[str] = mapped_column(String,default='')
+    poster_key: Mapped[str] = mapped_column(String,default='')
+    source_hash: Mapped[str] = mapped_column(String,default='',index=True)
+    duration: Mapped[float] = mapped_column(Float,default=0)
+    attempts: Mapped[int] = mapped_column(Integer,default=0)
+    lease: Mapped[str] = mapped_column(String,default='')
+    updated_at: Mapped[int] = mapped_column(BigInteger,default=lambda:int(time.time()))
+    reason: Mapped[str] = mapped_column(Text,default='')
+    flags: Mapped[str] = mapped_column(Text,default='[]')
+
+class AICheck(Base):
+    __tablename__ = 'ai_checks'
+    feeding_id: Mapped[str] = mapped_column(ForeignKey('feedings.id'),primary_key=True)
+    status: Mapped[str] = mapped_column(String,default='NOT_CONFIGURED')
+    decision: Mapped[str] = mapped_column(String,default='REVIEW')
+    model: Mapped[str] = mapped_column(String,default='')
+    confidence: Mapped[float] = mapped_column(Float,default=0)
+    reason: Mapped[str] = mapped_column(Text,default='')
+    attempts: Mapped[int] = mapped_column(Integer,default=0)
+    updated_at: Mapped[int] = mapped_column(BigInteger,default=lambda:int(time.time()))
+
+class Like(Base):
+    __tablename__ = 'likes'
+    feeding_id: Mapped[str] = mapped_column(ForeignKey('feedings.id'),primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'),primary_key=True)
+    created_at: Mapped[int] = mapped_column(BigInteger,default=lambda:int(time.time()))

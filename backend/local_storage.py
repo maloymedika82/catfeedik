@@ -89,3 +89,8 @@ def cleanup_abandoned_uploads(root: Path) -> None:
     for path in (root / '_incoming').glob('*.part'):
         if not path.is_symlink() and path.is_file() and path.stat().st_mtime < before:
             path.unlink(missing_ok=True)
+
+    for pattern in ('process-*','ai-*'):
+        for directory in (root/'_incoming').glob(pattern):
+            if not directory.is_symlink() and directory.is_dir() and directory.stat().st_mtime<before:
+                shutil.rmtree(directory)
