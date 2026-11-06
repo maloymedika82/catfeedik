@@ -4,6 +4,7 @@ class Reasoned(BaseModel):
     @field_validator('reason',check_fields=False)
     @classmethod
     def meaningful_reason(cls,value):
+        if '\x00' in value:raise ValueError('Недопустимый символ в причине')
         value=value.strip()
         minimum=10 if cls.__name__=='AppealRequest' else 3
         if len(value)<minimum:raise ValueError('Укажите содержательную причину')

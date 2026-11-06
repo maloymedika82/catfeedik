@@ -495,3 +495,6 @@ def dev_admin_login(response:Response,db:DB):
 
 from .administration import router as admin_router
 app.include_router(admin_router)
+
+from .sponsors import router as sponsor_router
+app.include_router(sponsor_router)
