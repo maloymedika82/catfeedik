@@ -186,7 +186,7 @@ def test_approval_requires_agreed_location_rules(setup,monkeypatch):
     monkeypatch.delenv('LOCATION_RADIUS_METERS')
     monkeypatch.setenv('APP_ENV','production')
     assert client.post(f'/api/admin/feedings/{fid}/decision',headers=admin,json={'decision':'APPROVED','reason':'Проверено'}).status_code==503
-    assert client.get('/api/me',headers=headers).json()['points']==0
+    with factory() as db:assert db.scalar(select(Points)) is None
 
 def test_snapshot_stays_fixed_within_hour_even_when_empty(setup):
     client,factory=setup

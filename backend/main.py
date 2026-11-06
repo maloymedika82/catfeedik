@@ -15,10 +15,13 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func, update
 from sqlalchemy.orm import Session as DBSession
+from .schemas import Reasoned
 from .settings import product_number
 from .geography import nearest_city,city_info
 from .awards import award
 from .ai import configured as ai_configured
+from .dependencies import DB,CurrentUser,Admin,active,totals,profile,authenticated_user
+from .ai_control import enabled as ai_enabled
 from .auth import verify_init_data
 from .local_storage import storage_root, object_path, check_space, publish_file, cleanup_abandoned_uploads
 from .db import Base, engine, get_db, User, Session, Feeding, Points, Audit, Leaderboard, SnapshotRun, VideoAsset, AICheck, Like, uid
@@ -30,29 +33,6 @@ async def lifespan(app):
     yield
 
 app = FastAPI(title='Catfeedik API', version='0.1.0', lifespan=lifespan)
-DB = Annotated[DBSession, Depends(get_db)]
-
-def require_user(db: DB, authorization: Annotated[str | None, Header()] = None):
-    if not authorization or not authorization.startswith('Bearer '):
-        raise HTTPException(401, 'Войдите через Telegram')
-    token_hash = hashlib.sha256(authorization[7:].encode()).hexdigest()
-    session = db.get(Session, token_hash)
-    if not session or session.expires_at <= int(time.time()):
-        raise HTTPException(401, 'Сессия истекла')
-    return db.get(User, session.user_id)
-
-CurrentUser = Annotated[User, Depends(require_user)]
-
-def require_admin(user: CurrentUser):
-    if user.role not in ('OWNER', 'ADMIN'):
-        raise HTTPException(403, 'Нет доступа')
-    return user
-Admin = Annotated[User, Depends(require_admin)]
-
-def active(user):
-    if user.frozen:
-        raise HTTPException(403, 'Аккаунт заморожен. Обратитесь в поддержку.')
-
 def video_limit():
     try:
         value=product_number('MAX_VIDEO_BYTES',20*1024*1024)
@@ -66,23 +46,14 @@ def media_cookie(response,token):
                         secure=os.getenv('APP_ENV')!='development',samesite='strict',path='/api/media')
 
 
-def totals(db, user_id):
-    points = db.scalar(select(func.coalesce(func.sum(Points.delta),0)).where(Points.user_id==user_id))
-    count = db.scalar(select(func.count()).select_from(Feeding).where(Feeding.user_id==user_id,Feeding.status=='APPROVED'))
-    return points, count
-
-def profile(db,user):
-    points,count = totals(db,user.id)
-    return dict(id=user.id,name=user.name,city=user.city,language=user.language,points=points,feedings=count,frozen=user.frozen,role=user.role,wallet=user.wallet)
-
 @app.get('/api/health')
 def health(db: DB):
     db.execute(select(1))
     return {'status':'ok','database':'sqlite-development' if engine.dialect.name=='sqlite' else 'postgresql'}
 
 @app.get('/api/config')
-def config():
-    return {'telegram_configured':bool(os.getenv('TELEGRAM_BOT_TOKEN')),'storage_configured':bool(storage_root()),'storage_backend':'local','demo_login_enabled':os.getenv('APP_ENV')=='development' and os.getenv('ALLOW_DEV_LOGIN')=='1','location_rules_configured':bool(product_number('LOCATION_RADIUS_METERS',100) and product_number('MAX_GPS_ACCURACY_METERS',50)),'max_video_bytes':video_limit(),'ai_configured':ai_configured(),'money_enabled':False,'bot_username':os.getenv('TELEGRAM_BOT_USERNAME') or 'animalfeedikbot'}
+def config(db:DB):
+    return {'telegram_configured':bool(os.getenv('TELEGRAM_BOT_TOKEN')),'storage_configured':bool(storage_root()),'storage_backend':'local','demo_login_enabled':os.getenv('APP_ENV')=='development' and os.getenv('ALLOW_DEV_LOGIN')=='1','demo_admin_enabled':os.getenv('APP_ENV')=='development' and os.getenv('ALLOW_DEV_LOGIN')=='1' and os.getenv('ALLOW_DEV_ADMIN','1')=='1','location_rules_configured':bool(product_number('LOCATION_RADIUS_METERS',100) and product_number('MAX_GPS_ACCURACY_METERS',50)),'max_video_bytes':video_limit(),'ai_configured':ai_configured(),'ai_moderation_enabled':ai_enabled(db),'money_enabled':False,'bot_username':os.getenv('TELEGRAM_BOT_USERNAME') or 'animalfeedikbot'}
 
 class Login(BaseModel):
     init_data: str = Field(min_length=1,max_length=16000)
@@ -336,7 +307,7 @@ def claim(feeding_id:str,db: DB,admin: Admin):
     db.commit()
     return {'claimed_by':admin.id}
 
-class Decision(BaseModel):
+class Decision(Reasoned):
     decision: Literal['APPROVED','REJECTED']
     reason: str = Field(min_length=3,max_length=2000)
 
@@ -372,7 +343,7 @@ def admin_feeding(feeding_id:str,db: DB,admin: Admin):
             'ai_status':check.status if check else 'NOT_CONFIGURED','ai_reason':check.reason if check else '',
             'flags':asset.flags if asset else '[]','id':feeding.id,'status':feeding.status,'city':feeding.city,'name':participant.name,'claimed_by':feeding.claimed_by,'video_url':url,'created_at':feeding.created_at,'reason':feeding.decision_reason}
 
-class Freeze(BaseModel):
+class Freeze(Reasoned):
     frozen: bool
     reason: str = Field(min_length=3,max_length=2000)
 
@@ -409,12 +380,7 @@ def private_media(feeding_id:str,db: DB,
     # Video elements cannot set bearer headers. Their same-origin HttpOnly cookie
     # is scoped to this read-only route; write endpoints still require bearer auth.
     token=authorization[7:] if authorization and authorization.startswith('Bearer ') else media_session
-    if not token:
-        raise HTTPException(401,'Войдите через Telegram')
-    session=db.get(Session,hashlib.sha256(token.encode()).hexdigest())
-    if not session or session.expires_at<=int(time.time()):
-        raise HTTPException(401,'Сессия истекла')
-    user=db.get(User,session.user_id)
+    user=authenticated_user(db,token)
     feeding=db.get(Feeding,feeding_id)
     if not feeding or (feeding.user_id!=user.id and user.role not in ('ADMIN','OWNER')):
         raise HTTPException(404,'Видео не найдено')
@@ -480,7 +446,7 @@ def unlike(feeding_id:str,db: DB,user: CurrentUser):
     db.commit()
     return {'liked':False,'likes':db.scalar(select(func.count()).select_from(Like).where(Like.feeding_id==feeding_id))}
 
-class RetryProcessing(BaseModel):
+class RetryProcessing(Reasoned):
     reason:str=Field(min_length=3,max_length=1000)
 
 @app.post('/api/admin/feedings/{feeding_id}/retry-processing')
@@ -516,3 +482,16 @@ def request_ai_retry(feeding_id:str,data:RetryProcessing,db: DB,admin: Admin):
     db.add(Audit(actor_id=admin.id,action='RETRY_AI',target=feeding_id,reason=data.reason))
     db.commit()
     return {'status':'queued'}
+
+
+@app.post('/api/auth/dev-admin')
+def dev_admin_login(response:Response,db:DB):
+    if os.getenv('APP_ENV')!='development' or os.getenv('ALLOW_DEV_LOGIN')!='1' or os.getenv('ALLOW_DEV_ADMIN','1')!='1':
+        raise HTTPException(404,'Not found')
+    user=db.scalar(select(User).where(User.telegram_id==-2))
+    if not user:
+        user=User(telegram_id=-2,name='Тестовый администратор',role='ADMIN');db.add(user);db.flush()
+    return login_result(db,user,response)
+
+from .administration import router as admin_router
+app.include_router(admin_router)

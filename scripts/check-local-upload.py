@@ -96,12 +96,86 @@ with tempfile.TemporaryDirectory(prefix='catfeedik-upload-') as directory:
                 page.keyboard.press('Escape')
                 public=anonymous.request.get(f'http://127.0.0.1:5177/api/public/videos/{fid}',headers={'Range':'bytes=0-15'})
                 assert public.status==206 and len(public.body())==16
+                # Exercise the separate admin UI with a development-only Admin session.
+                user_token=page.evaluate("sessionStorage.getItem('catfeedik-session')")
+                page.goto('http://127.0.0.1:5177/admin.html')
+                page.get_by_role('button',name='Войти тестовым администратором',exact=True).click()
+                page.get_by_role('heading',name='Панель управления',exact=True).wait_for()
+                dev_admin_token=page.evaluate("sessionStorage.getItem('catfeedik-session')")
+                page.get_by_role('button',name='Пользователи',exact=True).click()
+                page.get_by_role('textbox',name='Поиск пользователей',exact=True).fill('Тестовый участник')
+                page.get_by_role('button',name='Найти',exact=True).click()
+                page.locator('.admin-user-row').filter(has_text='Тестовый участник').click()
+                page.get_by_label('Причина операции',exact=True).fill('E2E points correction')
+                page.get_by_label('Изменение поинтов (минус для списания)',exact=True).fill('5')
+                # A successful mutation followed by a failed refresh must not invite a duplicate debit/credit.
+                def failed_user_refresh(route):
+                    route.fulfill(status=503,json={'detail':'Simulated failed refresh'})
+                page.route('**/api/admin/users/*',failed_user_refresh)
+                page.get_by_role('button',name='Применить корректировку',exact=True).click()
+                page.get_by_text('Операция сохранена. Не удалось обновить данные:',exact=False).wait_for()
+                assert page.get_by_role('button',name='Применить корректировку',exact=True).is_disabled()
+                page.unroute('**/api/admin/users/*',failed_user_refresh)
+                page.locator('.admin-user-row').filter(has_text='Тестовый участник').click()
+                page.get_by_text('Баланс: 15 · кормлений: 1 · USER',exact=True).wait_for()
+                page.get_by_label('Причина операции',exact=True).fill('E2E risk review')
+                page.get_by_role('button',name='Заморозить пользователя',exact=True).click()
+                page.get_by_role('button',name='Разморозить после проверки',exact=True).wait_for()
+                page.get_by_label('Причина операции',exact=True).fill('E2E review complete')
+                page.get_by_role('button',name='Разморозить после проверки',exact=True).click()
+                page.get_by_role('button',name='Заморозить пользователя',exact=True).wait_for()
+                page.get_by_role('button',name='Журнал',exact=True).click()
+                page.get_by_text('POINTS_ADJUSTED',exact=True).wait_for()
+                page.evaluate("token=>sessionStorage.setItem('catfeedik-session',token)",auth.json()['access_token'])
+                page.reload();page.get_by_label('Причина изменения',exact=True).fill('E2E provider outage')
+                page.get_by_role('button',name='Перейти на ручную проверку',exact=True).click()
+                page.get_by_text('приостановлена',exact=True).wait_for()
+                assert context.request.get('http://127.0.0.1:5177/api/config').json()['ai_moderation_enabled'] is False
+                # Submit a second test-only video, reject it, then appeal to a different Admin.
+                original=list((target/'videos'/'originals').glob('*/*'))[0].read_bytes()+b'e2e-second'
+                user_headers={'Authorization':'Bearer '+user_token}
+                second=context.request.post('http://127.0.0.1:5177/api/feedings',headers=user_headers,data={
+                    'request_key':str(uuid.uuid4()),'city':'ignored','latitude':55.80,'longitude':37.61,
+                    'accuracy':10,'mime_type':'video/mp4','size':len(original)})
+                assert second.status==200
+                second_id=second.json()['id']
+                assert context.request.put('http://127.0.0.1:5177/api'+second.json()['upload_path'],headers={**user_headers,'Content-Type':'video/mp4'},data=original).status==204
+                assert context.request.post(f'http://127.0.0.1:5177/api/feedings/{second_id}/complete',headers=user_headers).status==200
+                for _ in range(120):
+                    history=context.request.get('http://127.0.0.1:5177/api/me/feedings',headers=user_headers).json()
+                    if next(f for f in history if f['id']==second_id)['status']=='REVIEW':break
+                    time.sleep(.5)
+                else:raise AssertionError('Second test video was not processed')
+                assert context.request.post(f'http://127.0.0.1:5177/api/admin/feedings/{second_id}/claim',headers=admin).status==200
+                assert context.request.post(f'http://127.0.0.1:5177/api/admin/feedings/{second_id}/decision',headers=admin,data={'decision':'REJECTED','reason':'E2E initial rejection'}).status==200
+                page.evaluate("token=>sessionStorage.setItem('catfeedik-session',token)",user_token)
+                page.goto('http://127.0.0.1:5177')
+                page.get_by_role('button',name='Профиль',exact=True).click()
+                page.get_by_role('button',name='Мои видео',exact=True).click()
+                page.get_by_role('button',name='Подать апелляцию',exact=True).click()
+                page.get_by_label('Причина апелляции',exact=True).fill('E2E please review the decision again')
+                page.get_by_role('button',name='Отправить апелляцию',exact=True).click()
+                page.get_by_text('Апелляция рассматривается',exact=True).wait_for()
+                page.evaluate("token=>sessionStorage.setItem('catfeedik-session',token)",dev_admin_token)
+                page.goto('http://127.0.0.1:5177/admin.html')
+                page.get_by_role('button',name='Апелляции',exact=True).click()
+                page.get_by_role('button',name='Рассмотреть',exact=True).click()
+                page.get_by_label('Причина решения по апелляции',exact=True).fill('E2E second moderator verified video')
+                page.get_by_role('button',name='Принять апелляцию',exact=True).click()
+                page.get_by_text('Открытых апелляций нет.',exact=True).wait_for()
+                assert context.request.get('http://127.0.0.1:5177/api/me',headers=user_headers).json()['points']==25
+                page.get_by_role('button',name='Обзор',exact=True).click()
+                page.get_by_role('heading',name='Режим модерации',exact=True).wait_for()
+                page.screenshot(path=str(root/'artifacts'/'admin-desktop.png'),full_page=True)
+                page.set_viewport_size({'width':390,'height':844})
+                page.screenshot(path=str(root/'artifacts'/'admin-mobile.png'),full_page=True)
+                assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
                 denied=context.request.get('http://127.0.0.1:5177/.local/services.env')
                 assert denied.status==403
                 assert not list((target/'videos'/'_incoming').iterdir())
                 assert not errors,errors
                 browser.close()
-                print('Passed: fake camera -> upload -> actual Celery/Redis/FFmpeg -> REVIEW -> Owner manual decision -> map marker -> public city feed -> like. Private/public range access and staging cleanup passed. Map interactions used local test tiles; real OSM network is not verified. Temporary data removed.')
+                print('Passed: fake camera -> upload -> actual Celery/Redis/FFmpeg -> REVIEW -> Owner manual decision -> map marker -> public city feed -> like. Admin UI points/freeze/audit, Owner manual mode, user appeal and different-Admin resolution passed. Private/public range access and staging cleanup passed. Map interactions used local test tiles; real OSM network is not verified. Temporary data removed.')
     except Exception:
         print((target/'servers.log').read_text(errors='replace')[-4000:])
         if 'page' in locals() and not page.is_closed():

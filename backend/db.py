@@ -128,3 +128,46 @@ class Like(Base):
     feeding_id: Mapped[str] = mapped_column(ForeignKey('feedings.id'),primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey('users.id'),primary_key=True)
     created_at: Mapped[int] = mapped_column(BigInteger,default=lambda:int(time.time()))
+
+class AIRetry(Base):
+    __tablename__ = 'ai_retry_schedule'
+    feeding_id: Mapped[str] = mapped_column(ForeignKey('feedings.id'),primary_key=True)
+    not_before: Mapped[int] = mapped_column(BigInteger,default=0,index=True)
+    category: Mapped[str] = mapped_column(String,default='')
+    http_status: Mapped[int] = mapped_column(Integer,default=0)
+
+class ProviderGate(Base):
+    __tablename__ = 'ai_provider_gates'
+    scope: Mapped[str] = mapped_column(String,primary_key=True)
+    next_request_at: Mapped[int] = mapped_column(BigInteger,default=0)
+
+class RuntimeControl(Base):
+    __tablename__ = 'runtime_controls'
+    name: Mapped[str] = mapped_column(String,primary_key=True)
+    value: Mapped[str] = mapped_column(String)
+
+class Appeal(Base):
+    __tablename__ = 'appeals'
+    id: Mapped[str] = mapped_column(String,primary_key=True,default=uid)
+    feeding_id: Mapped[str] = mapped_column(ForeignKey('feedings.id'),unique=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'),index=True)
+    original_reviewer: Mapped[str | None] = mapped_column(ForeignKey('users.id'),nullable=True)
+    claimed_by: Mapped[str | None] = mapped_column(ForeignKey('users.id'),nullable=True)
+    status: Mapped[str] = mapped_column(String,default='OPEN',index=True)
+    reason: Mapped[str] = mapped_column(Text)
+    decision_reason: Mapped[str] = mapped_column(Text,default='')
+    created_at: Mapped[int] = mapped_column(BigInteger,default=lambda:int(time.time()))
+    resolved_at: Mapped[int | None] = mapped_column(BigInteger,nullable=True)
+
+class PointAdjustment(Base):
+    __tablename__ = 'point_adjustments'
+    __table_args__ = (UniqueConstraint('actor_id','request_key'),)
+    id: Mapped[str] = mapped_column(String,primary_key=True,default=uid)
+    actor_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'),index=True)
+    request_key: Mapped[str] = mapped_column(String(80))
+    delta: Mapped[int] = mapped_column(Integer)
+    old_balance: Mapped[int] = mapped_column(Integer)
+    new_balance: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[int] = mapped_column(BigInteger,default=lambda:int(time.time()))

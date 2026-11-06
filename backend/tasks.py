@@ -2,9 +2,10 @@ import os
 import time
 from celery import Celery
 from sqlalchemy import select,or_,and_,update
-from .db import SessionLocal,VideoAsset,AICheck,Feeding
+from .db import SessionLocal,VideoAsset,AICheck,Feeding,AIRetry
 from .processing import process_video,retry_ai
 from .ai import configured
+from .ai_control import enabled,next_provider_time
 
 celery_app=Celery('catfeedik',broker=os.getenv('REDIS_URL') or 'redis://127.0.0.1:6379/0')
 celery_app.conf.update(task_serializer='json',accept_content=['json'],result_serializer='json',
@@ -27,11 +28,12 @@ def dispatch():
     for item in ids:process.delay(item)
     if configured():
         with SessionLocal() as db:
+            if not enabled(db) or next_provider_time(db)>now:return len(ids)
             db.execute(update(AICheck).where(AICheck.status=='RUNNING',AICheck.updated_at<now-300).values(status='ERROR'))
             db.commit()
-            pending=list(db.scalars(select(AICheck.feeding_id).join(Feeding,Feeding.id==AICheck.feeding_id)
-                .where(AICheck.status.in_(['ERROR','NOT_CONFIGURED']),AICheck.attempts<3,AICheck.updated_at<=now-30,
-                    Feeding.status=='REVIEW',Feeding.claimed_by.is_(None)).limit(100)))
+            pending=list(db.scalars(select(AICheck.feeding_id).join(Feeding,Feeding.id==AICheck.feeding_id).outerjoin(AIRetry,AIRetry.feeding_id==AICheck.feeding_id)
+                .where(AICheck.status.in_(['ERROR','NOT_CONFIGURED','PAUSED']),AICheck.attempts<3,AICheck.updated_at<=now-30,
+                    or_(AIRetry.feeding_id.is_(None),AIRetry.not_before<=now),Feeding.status=='REVIEW',Feeding.claimed_by.is_(None)).limit(100)))
         for item in pending:analyze.delay(item)
     return len(ids)
 

@@ -5,12 +5,13 @@ import time
 import uuid
 from sqlalchemy import select,update,and_,or_,text
 from fastapi import HTTPException
-from .db import SessionLocal,User,Feeding,VideoAsset,AICheck
+from .db import SessionLocal,User,Feeding,VideoAsset,AICheck,AIRetry
 from .local_storage import storage_root,object_path,publish_file,sha256_file
 from .video_processing import normalize,sample_frames,InvalidVideo
 from .geography import nearest_city
 from .ai import moderate,ProviderUnavailable,configured
 from .awards import award
+from .ai_control import enabled,reserve_request,schedule_failure,defer_until
 
 
 def process_video(feeding_id,session_factory=None):
@@ -38,15 +39,24 @@ def process_video(feeding_id,session_factory=None):
             with factory() as db:
                 duplicate=bool(db.scalar(select(VideoAsset.feeding_id).where(VideoAsset.source_hash==digest,VideoAsset.status=='READY',VideoAsset.feeding_id!=feeding_id).limit(1)))
             verdict=None;ai_status='NOT_CONFIGURED';ai_reason='AI не настроен: требуется ручная проверка'
+            ai_error=None;deferred=0;attempted=False
+            with factory() as db:automatic=enabled(db)
             if duplicate:
                 ai_status='SKIPPED_DUPLICATE';ai_reason='Обнаружено совпадение файла: требуется ручная проверка'
+            elif not automatic:
+                ai_status='PAUSED';ai_reason='Автоматическая AI-проверка выключена; требуется ручная проверка'
             else:
                 try:
-                    verdict=moderate(sample_frames(video,directory)) if configured() else None
+                    if configured():
+                        deferred=reserve_request(factory)
+                        if deferred:
+                            ai_status='ERROR';ai_reason='AI ограничил запросы; видео доступно для ручной проверки'
+                        else:
+                            attempted=True;verdict=moderate(sample_frames(video,directory))
                     if verdict:
                         ai_status='DONE';ai_reason=verdict.reason
-                except ProviderUnavailable:
-                    ai_status='ERROR';ai_reason='AI недоступен: видео передано на ручную проверку'
+                except ProviderUnavailable as error:
+                    ai_error=error;ai_status='ERROR';ai_reason='AI недоступен: видео передано на ручную проверку'
             output_key=f'processed/{feeding_id}/{lease}.mp4'
             poster_key=f'processed/{feeding_id}/{lease}.jpg'
             for file,destination in ((video,output_key),(poster,poster_key)):
@@ -68,19 +78,21 @@ def process_video(feeding_id,session_factory=None):
                 if not check:check=AICheck(feeding_id=feeding_id);db.add(check)
                 check.status=ai_status;check.model=verdict.provider_model if verdict else (os.getenv('AI_MODEL') or 'auto');check.reason=ai_reason
                 check.decision=verdict.decision if verdict else 'REVIEW';check.confidence=verdict.confidence if verdict else 0
-                check.attempts=(check.attempts or 0)+(1 if ai_status in ('DONE','ERROR') else 0)
+                check.attempts=(check.attempts or 0)+(1 if attempted else 0)
+                if ai_error:schedule_failure(db,feeding_id,ai_error,check.attempts)
+                elif deferred:defer_until(db,feeding_id,deferred)
                 check.updated_at=int(time.time())
                 db.flush()
                 # Human claims and frozen/final accounts take priority over AI results.
                 if feeding.status=='PROCESSING' and not user.frozen:
                     feeding.city=city['label'];feeding.status='REVIEW';feeding.decision_reason=ai_reason
-                    if verdict and not duplicate and verdict.decision=='APPROVE':
+                    if verdict and not duplicate and enabled(db) and verdict.decision=='APPROVE':
                         try:
                             award(db,user,feeding)
                             feeding.status='APPROVED';feeding.decision_reason='Подтверждено AI и серверными проверками'
                         except HTTPException:
                             feeding.decision_reason='AI рекомендует одобрить; требуется проверка ограничений начисления'
-                    elif verdict and not duplicate and verdict.decision=='REJECT':
+                    elif verdict and not duplicate and enabled(db) and verdict.decision=='REJECT':
                         feeding.status='REJECTED';feeding.decision_reason=verdict.reason
                 db.commit()
                 return {'status':'READY','feeding_status':feeding.status}
@@ -108,22 +120,31 @@ def retry_ai(feeding_id,session_factory=None):
     factory=session_factory or SessionLocal
     now=int(time.time())
     with factory() as db:
+        if not enabled(db):return {'status':'paused'}
+        existing=db.get(AICheck,feeding_id);feeding=db.get(Feeding,feeding_id)
+        if not existing or existing.status not in ('ERROR','NOT_CONFIGURED','PAUSED') or existing.attempts>=3 or not feeding or feeding.status!='REVIEW' or feeding.claimed_by:
+            return {'status':'unchanged'}
+        scheduled=db.get(AIRetry,feeding_id)
+        if scheduled and scheduled.not_before>now:return {'status':'deferred','retry_at':scheduled.not_before}
+    delayed=reserve_request(factory)
+    if delayed:return {'status':'deferred','retry_at':delayed}
+    with factory() as db:
         check=db.scalar(select(AICheck).where(AICheck.feeding_id==feeding_id).with_for_update())
         feeding=db.get(Feeding,feeding_id);asset=db.get(VideoAsset,feeding_id)
-        if not check or check.status not in ('ERROR','NOT_CONFIGURED') or check.attempts>=3:
+        if not check or check.status not in ('ERROR','NOT_CONFIGURED','PAUSED') or check.attempts>=3:
             return {'status':'unchanged'}
         if not feeding or feeding.status!='REVIEW' or feeding.claimed_by or not asset or asset.status!='READY':
             return {'status':'unchanged'}
         user_id=feeding.user_id;key=asset.output_key
         check.status='RUNNING';check.attempts+=1;check.updated_at=now
         db.commit()
-    verdict=None
+    verdict=None;ai_error=None
     try:
         with tempfile.TemporaryDirectory(dir=storage_root()/'_incoming',prefix='ai-') as directory:
             verdict=moderate(sample_frames(object_path(key),directory))
-    except Exception:
+    except Exception as error:
         # Provider and media errors remain retryable, not a rejection.
-        pass
+        ai_error=error
     with factory() as db:
         user=db.scalar(select(User).where(User.id==user_id).with_for_update())
         feeding=db.scalar(select(Feeding).where(Feeding.id==feeding_id).with_for_update())
@@ -133,7 +154,7 @@ def retry_ai(feeding_id,session_factory=None):
         check.status='DONE' if verdict else 'ERROR';check.updated_at=int(time.time())
         if verdict:
             check.decision=verdict.decision;check.confidence=verdict.confidence;check.reason=verdict.reason;check.model=verdict.provider_model
-            if feeding.status=='REVIEW' and not feeding.claimed_by and not user.frozen and not json.loads(asset.flags):
+            if feeding.status=='REVIEW' and not feeding.claimed_by and not user.frozen and not json.loads(asset.flags) and enabled(db):
                 if verdict.decision=='APPROVE':
                     try:
                         award(db,user,feeding);feeding.status='APPROVED';feeding.decision_reason='Подтверждено AI и серверными проверками'
@@ -141,6 +162,8 @@ def retry_ai(feeding_id,session_factory=None):
                         pass
                 elif verdict.decision=='REJECT':
                     feeding.status='REJECTED';feeding.decision_reason=verdict.reason
-        else:check.reason='AI недоступен; требуется ручная проверка'
+        else:
+            check.reason='AI недоступен; требуется ручная проверка'
+            schedule_failure(db,feeding_id,ai_error,check.attempts)
         db.commit()
         return {'status':check.status,'feeding_status':feeding.status}
