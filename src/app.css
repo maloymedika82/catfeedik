@@ -7,3 +7,49 @@
 .appeal-form{border-top:1px solid #dce4d3;margin-top:20px;padding-top:20px}.appeal-form textarea{display:block;width:100%;min-height:100px;padding:12px;font:inherit;border:1px solid #d6dfca;border-radius:10px;background:#f8fbf3;margin-top:8px}.history-row>span>small{display:block;font-size:10px;color:#849573;margin-top:6px}.history-row>span>button{display:block;margin-top:8px}
 
 .participation-text{margin:18px 0}.participation-text p{font-size:14px;line-height:1.65}.consent-check{display:flex;gap:12px;align-items:flex-start;margin:20px 0;font-size:14px;line-height:1.5}.consent-check input{flex-shrink:0;width:20px;height:20px;margin-top:2px;accent-color:#263527}.participation .text-button{display:block;margin:16px auto 0}
+
+/* Telegram's bottom inset and short phone screens must leave actions reachable. */
+@media(max-width:640px){
+ body{font-size:14px}
+ header{height:62px;padding:0 16px;gap:10px}
+ .brand{font-size:20px;gap:7px;min-width:0}
+ .brand-mark{width:32px;height:32px;font-size:24px;flex:none}
+ .brand-mark span{font-size:19px}
+ .beta,.header-end .demo,.header-note{display:none}
+ .header-end{gap:0}
+ .avatar{width:36px;height:36px;flex:none}
+ main,footer{margin-left:16px;margin-right:16px}
+ main{padding-top:22px;padding-bottom:calc(125px + env(safe-area-inset-bottom))}
+ .intro{display:block;margin-bottom:18px}
+ .intro h1{font-size:clamp(28px,8vw,34px);line-height:1.08;margin:10px 0}
+ .intro p{font-size:13px;line-height:1.45;max-width:32ch}
+ .intro .experiment{display:none}
+ .stats{margin-bottom:18px;border-radius:14px;padding:0}
+ .stat{min-width:0;padding:12px 14px;min-height:72px}
+ .stat small{font-size:11px;line-height:1.25}
+ .stat strong{font-size:23px;margin-top:4px}
+ .layout{gap:18px}
+ .cta{padding:18px 20px}
+ .cta h2{font-size:24px;line-height:1.12;margin:9px 0}
+ .cta p{font-size:12px;line-height:1.45;margin:0}
+ .cta .primary{margin-top:12px;min-height:48px}
+ .cta .footnote{margin-top:6px}
+ .panel-head{padding:16px}
+ .panel-head h2{font-size:18px}
+ .world-map{height:270px}
+ .nav-demo{bottom:calc(10px + env(safe-area-inset-bottom));width:calc(100% - 32px)!important;max-width:420px}
+ .nav-surface.dock-surface{padding:5px;border-radius:16px}
+ .bottom-dock button{min-height:52px}
+ footer{margin-bottom:calc(100px + env(safe-area-inset-bottom));gap:4px}
+ dialog{width:calc(100% - 20px);max-width:480px;max-height:calc(100dvh - 20px - env(safe-area-inset-top) - env(safe-area-inset-bottom));padding:20px;overflow-y:auto;overscroll-behavior:contain}
+ dialog .close{position:sticky;top:0;float:right;z-index:2;min-width:38px;min-height:38px;margin:-10px -10px 0 0;background:#f8faf4;border-radius:50%}
+ dialog h2{font-size:23px;margin:12px 0}
+ dialog .primary,dialog .secondary{min-height:48px}
+ dialog video{max-height:min(42dvh,300px);margin-top:12px}
+ .review-actions{flex-wrap:wrap}
+ .review-actions button{flex:1 1 130px}
+ .history-row{gap:10px;overflow-wrap:anywhere}
+ .history-row>span{text-align:right;max-width:45%;flex:none}
+ .field input,.field select,.appeal-form textarea{font-size:16px}
+}
+@media(max-width:360px){.stat{padding:10px}.brand{font-size:18px}.beta{display:none}.cta h2{font-size:22px}}

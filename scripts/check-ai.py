@@ -13,7 +13,7 @@ import httpx
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from backend.settings import load_environment
 load_environment()
-from backend.ai import configured,base_url,resolve_model,moderate,ProviderUnavailable,provider_error_details
+from backend.ai import configured,base_url,resolve_model,moderate,ProviderUnavailable,provider_error_details,parse_json_answer
 
 
 def make_grid():
@@ -50,7 +50,12 @@ def main():
                     {'type':'text','text':'Read the attached 3-by-3 color grid. Return only JSON with cells: an array of exactly nine lowercase color names in row-major order (left to right, top to bottom). Choose from red, green, blue, yellow, black, white. Determine the colors only from the image.'},
                     {'type':'image_url','image_url':{'url':'data:image/png;base64,'+base64.b64encode(png).decode(),'detail':'low'}}]}]})
             response.raise_for_status()
-            actual=json.loads(response.json()['choices'][0]['message']['content']).get('cells')
+            raw=response.json()['choices'][0]['message']['content']
+            try:
+                actual=parse_json_answer(raw).get('cells')
+            except json.JSONDecodeError:
+                print('FAIL: provider did not return JSON for the vision test; fenced='+str(raw.strip().startswith('```'))+', characters='+str(len(raw))+'. No response text was printed.')
+                return 1
             if actual!=expected:
                 print('FAIL: provider answered, but the random visual challenge was not read correctly. Image support is not confirmed.')
                 return 1
@@ -77,8 +82,8 @@ def main():
         print('FAIL: '+str(error))
         if error.details:print_provider_details(error.details)
         return 1
-    except Exception:
-        print('FAIL: could not validate the provider response. Credentials and response bodies were not printed.')
+    except Exception as error:
+        print('FAIL: could not validate the provider response ('+type(error).__name__+'). Credentials and response bodies were not printed.')
         return 1
 
 if __name__=='__main__':

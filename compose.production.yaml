@@ -76,6 +76,14 @@ services:
     depends_on:
       api:
         condition: service_healthy
+  bot:
+    <<: *app
+    command: [python, -m, backend.bot]
+    volumes:
+      - bot_state:/data/bot
+    depends_on:
+      api:
+        condition: service_healthy
   web:
     build:
       context: .
@@ -99,5 +107,6 @@ volumes:
   redis:
   videos:
   beat:
+  bot_state:
   caddy_data:
   caddy_config:

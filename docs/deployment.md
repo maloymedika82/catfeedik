@@ -26,6 +26,8 @@ nano .env.production
 - OWNER_TELEGRAM_IDS: 2022054034, если это ваш Telegram ID.
 - AI_API_KEY / AI_MODEL: только если провайдер проверен. Можно оставить ключ пустым; AI_MODERATION_ENABLED=0 включает первоначальную ручную проверку. Сохранённый выбор Owner в админке имеет приоритет над этой начальной настройкой.
 
+Для AI сначала выполните `docker compose --env-file .env.production -f compose.production.yaml -f compose.funnel.yaml run --rm --no-deps -T api python scripts/check-ai.py`: проверка посылает два маленьких тестовых изображения и не начисляет поинты. Для VPS без Funnel уберите второй `-f`. Только после успешного vision-теста включайте `AI_MODERATION_ENABLED=1` и перезапускайте API, Worker и Beat. Если владелец уже выключил AI в админке, его сохранённый выбор имеет приоритет. Не отправляйте ключ в чат.
+
 POSTGRES_PASSWORD сгенерирован скриптом; не меняйте его после создания базы без отдельной смены пароля в PostgreSQL. Не отправляйте содержимое .env.production в чат, скриншоты или GitHub. Compose подставляет пароль в URL, поэтому для него используйте только сгенерированный hex либо URL-безопасные символы.
 
 ```sh
@@ -47,6 +49,8 @@ curl --fail https://app.your-domain.ru/api/health
 Замените домен своим. API должен вернуть status=ok и database=postgresql. Запуск API проверяет production-настройки; тестовые входы принудительно выключены. Worker и Beat ждут здорового API. Видео находятся в отдельном Docker volume, а не в статической раздаче. /docs и /openapi.json снаружи закрыты. Деньги выключены.
 
 ## Подключение Telegram
+
+Production Compose запускает отдельный сервис `bot`: он отвечает на `/start` и `/help` в личном чате и показывает кнопку Mini App. Один раз после сборки API задайте имя, описание, команды и кнопку меню через `docker compose --env-file .env.production -f compose.production.yaml -f compose.funnel.yaml run --rm --no-deps -T api python -m backend.bot --configure` (для VPS с Funnel). Бот использует long polling и отдельный том для позиции очереди; существующий webhook должен быть отключён. Фоновый сервис не трогает кормления и видео.
 
 ### Вариант для VPS за NAT без выделенного IP
 

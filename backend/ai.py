@@ -77,6 +77,21 @@ def resolve_model(client):
     return sorted(candidates,key=lambda name:('lite' not in name.lower(),'preview' in name.lower(),name))[0]
 
 
+def parse_json_answer(raw):
+    if not isinstance(raw,str):
+        raise ValueError('Expected text answer')
+    value=raw.strip()
+    if value.startswith('```') and value.endswith('```'):
+        lines=value.splitlines()
+        if len(lines)<3 or lines[0].strip().lower() not in ('```','```json') or lines[-1].strip()!='```':
+            raise ValueError('Invalid JSON fence')
+        value='\n'.join(lines[1:-1]).strip()
+    result=json.loads(value)
+    if not isinstance(result,dict):
+        raise ValueError('Expected JSON object')
+    return result
+
+
 def moderate(frames,client=None):
     if not configured():
         return None
@@ -99,7 +114,7 @@ def moderate(frames,client=None):
                    'temperature':0,'max_tokens':600,'response_format':{'type':'json_object'}})
         response.raise_for_status()
         raw=response.json()['choices'][0]['message']['content']
-        verdict=Verdict.model_validate(json.loads(raw))
+        verdict=Verdict.model_validate(parse_json_answer(raw))
         verdict.provider_model=selected_model
         if verdict.decision=='APPROVE' and (not all((verdict.animal_visible,verdict.food_visible,verdict.eating_visible)) or verdict.suspicious or verdict.confidence<.9):
             verdict.decision='REVIEW'
