@@ -223,3 +223,10 @@ class TaskApplication(Base):
     review_reason: Mapped[str] = mapped_column(Text,default='')
     created_at: Mapped[int] = mapped_column(BigInteger,default=lambda:int(time.time()))
     reviewed_at: Mapped[int | None] = mapped_column(BigInteger,nullable=True)
+
+class ParticipationConsent(Base):
+    __tablename__ = 'participation_consents'
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'),primary_key=True)
+    version: Mapped[str] = mapped_column(String(40),primary_key=True)
+    document_hash: Mapped[str] = mapped_column(String(64))
+    accepted_at: Mapped[int] = mapped_column(BigInteger,default=lambda:int(time.time()))

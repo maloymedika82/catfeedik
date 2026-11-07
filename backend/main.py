@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, func, update
 from sqlalchemy.orm import Session as DBSession
 from .schemas import Reasoned
+from .consent import require_consent
 from .settings import product_number
 from .geography import nearest_city,city_info
 from .awards import award
@@ -191,6 +192,7 @@ def create_feeding(data: Upload,db: DB,user: CurrentUser):
     # Lock per participant to serialize retries and concurrent requests.
     locked_user=db.execute(select(User).where(User.id==user.id).with_for_update().execution_options(populate_existing=True)).scalar_one()
     active(locked_user)
+    require_consent(db,user.id)
     feeding=db.scalar(select(Feeding).where(Feeding.user_id==user.id,Feeding.request_key==data.request_key))
     if feeding and feeding.status!='UPLOADING':
         return {'id':feeding.id,'status':feeding.status,'upload_path':None}
@@ -210,6 +212,7 @@ def prepare_upload(db,user_id,feeding_id):
     feeding=db.scalar(select(Feeding).where(Feeding.id==feeding_id,Feeding.user_id==user_id))
     if not feeding:
         raise HTTPException(404, 'Видео не найдено')
+    require_consent(db,user_id)
     if feeding.status!='UPLOADING':
         raise HTTPException(409, 'Видео уже передано на проверку')
     expected,mime=feeding.size,feeding.mime_type
@@ -287,6 +290,7 @@ def complete(feeding_id:str,db: DB,user: CurrentUser):
         raise HTTPException(404,'Видео не найдено')
     if feeding.status!='UPLOADING':
         return {'id':feeding.id,'status':feeding.status}
+    require_consent(db,user.id)
     path=object_path(feeding.object_key)
     if not path.is_file() or path.stat().st_size!=feeding.size:
         raise HTTPException(409,'Видео не загружено полностью. Повторите отправку.')
@@ -498,3 +502,6 @@ app.include_router(admin_router)
 
 from .sponsors import router as sponsor_router
 app.include_router(sponsor_router)
+
+from .consent import router as consent_router
+app.include_router(consent_router)

@@ -91,6 +91,8 @@ def test_identical_video_other_user_is_review_not_reward(setup,real_video,monkey
     monkeypatch.setenv('TELEGRAM_BOT_TOKEN','test-bot-token')
     other=client.post('/api/auth/telegram',json={'init_data':signed({'id':12345,'first_name':'Other'})}).json()
     other_headers={'Authorization':'Bearer '+other['access_token']}
+    terms=client.get('/api/me/participation-consent',headers=other_headers).json()
+    assert client.post('/api/me/participation-consent',headers=other_headers,json={k:terms[k] for k in ('version','document_hash')}|{'accepted':True}).status_code==200
     second=upload_video(client,other_headers,real_video,key='duplicate-video-12345')
     assert process_video(second,factory)['feeding_status']=='REVIEW'
     assert len(calls)==1

@@ -52,7 +52,10 @@ def setup(monkeypatch,tmp_path):
 def login(client):
     result=client.post('/api/auth/dev')
     assert result.status_code==200
-    return {'Authorization':'Bearer '+result.json()['access_token']}
+    headers={'Authorization':'Bearer '+result.json()['access_token']}
+    terms=client.get('/api/me/participation-consent',headers=headers).json()
+    assert client.post('/api/me/participation-consent',headers=headers,json={k:terms[k] for k in ('version','document_hash')}|{'accepted':True}).status_code==200
+    return headers
 
 def signed(user=None,age=0):
     data={'auth_date':str(int(time.time())-age),'query_id':'example','user':json.dumps(user or {'id':81234,'first_name':'Аня'})}

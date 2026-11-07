@@ -52,8 +52,8 @@ with tempfile.TemporaryDirectory(prefix='catfeedik-upload-') as directory:
                 page.goto('http://127.0.0.1:5177')
                 page.get_by_role('button',name='Тестовый вход',exact=True).click()
                 page.locator('.login-banner').wait_for(state='hidden')
-                page.get_by_role('button',name='НАЧАТЬ',exact=True).click()
-                page.get_by_role('button',name='Разрешить доступ и открыть камеру').click()
+                page.get_by_role('button',name='НАЧАТЬ',exact=True).click();page.get_by_role('button',name='Принять и продолжить',exact=True).wait_for();page.set_viewport_size({'width':390,'height':844});page.screenshot(path=str(root/'artifacts'/'participation-terms-mobile.png'),full_page=True);assert page.evaluate('document.documentElement.scrollWidth<=innerWidth');assert page.get_by_role('button',name='Принять и продолжить',exact=True).is_disabled();page.get_by_role('checkbox').check();page.get_by_role('button',name='Принять и продолжить',exact=True).click()
+                page.get_by_role('button',name='Открыть камеру',exact=True).click()
                 page.get_by_role('button',name='Начать запись',exact=True).click()
                 page.wait_for_timeout(1200)
                 page.get_by_role('button',name='Завершить',exact=True).click()
@@ -200,8 +200,24 @@ with tempfile.TemporaryDirectory(prefix='catfeedik-upload-') as directory:
                 page.get_by_text('Заявка подтверждена, поинты начислены.',exact=True).wait_for()
                 participant=context.request.get('http://127.0.0.1:5177/api/me',headers=user_headers).json()
                 assert participant['points']==32 and participant['feedings']==2,participant
+                # Saved account consent skips the form on later recordings; denied GPS
+                # is explained before requesting camera/microphone again.
+                page.evaluate("token=>sessionStorage.setItem('catfeedik-session',token)",user_token)
+                page.goto('http://127.0.0.1:5177')
+                page.get_by_role('button',name='НАЧАТЬ',exact=True).click()
+                page.get_by_role('button',name='Открыть камеру',exact=True).wait_for()
+                assert page.get_by_role('button',name='Принять и продолжить',exact=True).count()==0
+                page.evaluate("""()=>{window.testMediaCalls=0;navigator.mediaDevices.getUserMedia=async()=>{window.testMediaCalls++;throw Error('unexpected media request')};navigator.geolocation.getCurrentPosition=(_success,failure)=>failure({code:1})}""")
+                page.get_by_role('button',name='Открыть камеру',exact=True).click()
+                page.get_by_text('Доступ к геолокации запрещён.',exact=False).wait_for()
+                assert page.evaluate('window.testMediaCalls')==0
+                page.set_viewport_size({'width':390,'height':844})
+                page.screenshot(path=str(root/'artifacts'/'location-permission-mobile.png'),full_page=True)
+                page.evaluate("token=>sessionStorage.setItem('catfeedik-session',token)",auth.json()['access_token'])
+                page.goto('http://127.0.0.1:5177/admin.html')
                 page.get_by_role('button',name='Обзор',exact=True).click()
                 page.get_by_role('heading',name='Режим модерации',exact=True).wait_for()
+                page.set_viewport_size({'width':1440,'height':1100})
                 page.screenshot(path=str(root/'artifacts'/'admin-desktop.png'),full_page=True)
                 page.set_viewport_size({'width':390,'height':844})
                 page.screenshot(path=str(root/'artifacts'/'admin-mobile.png'),full_page=True)
@@ -211,7 +227,7 @@ with tempfile.TemporaryDirectory(prefix='catfeedik-upload-') as directory:
                 assert not list((target/'videos'/'_incoming').iterdir())
                 assert not errors,errors
                 browser.close()
-                print('Passed: fake camera -> upload -> actual Celery/Redis/FFmpeg -> REVIEW -> Owner manual decision -> map marker -> public city feed -> like. Admin UI points/freeze/audit, Owner manual mode, user appeal and different-Admin resolution passed. Sponsor creation, task submission and manual once-only reward passed. Private/public range access and staging cleanup passed. Map interactions used local test tiles; real OSM network is not verified. Temporary data removed.')
+                print('Passed: explicit versioned participation consent, persisted acceptance and denied-GPS recovery without media requests; fake camera -> upload -> actual Celery/Redis/FFmpeg -> REVIEW -> Owner manual decision -> map marker -> public city feed -> like. Admin UI points/freeze/audit, Owner manual mode, user appeal and different-Admin resolution passed. Sponsor creation, task submission and manual once-only reward passed. Private/public range access and staging cleanup passed. Map interactions used local test tiles; real OSM network is not verified. Temporary data removed.')
     except Exception:
         print((target/'servers.log').read_text(errors='replace')[-4000:])
         if 'page' in locals() and not page.is_closed():
