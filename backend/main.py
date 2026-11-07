@@ -29,7 +29,24 @@ from .db import Base, engine, get_db, User, Session, Feeding, Points, Audit, Lea
 
 @asynccontextmanager
 async def lifespan(app):
-    Base.metadata.create_all(engine)  # Initial development schema; versioned migrations required before production.
+    if os.getenv('APP_ENV') == 'production':
+        from alembic import command
+        from alembic.config import Config
+        from alembic.runtime.migration import MigrationContext
+        from alembic.script import ScriptDirectory
+        from sqlalchemy import inspect
+
+        migration_config = Config('alembic.ini')
+        expected = ScriptDirectory.from_config(migration_config).get_current_head()
+        with engine.connect() as connection:
+            current = MigrationContext.configure(connection).get_current_revision()
+            application_tables = set(inspect(connection).get_table_names()) & set(Base.metadata.tables)
+        if current is None and not application_tables:
+            command.upgrade(migration_config, 'head')
+        elif current != expected:
+            raise RuntimeError('Database migration is required before starting the production API')
+    else:
+        Base.metadata.create_all(engine)
     cleanup_abandoned_uploads(storage_root())
     yield
 

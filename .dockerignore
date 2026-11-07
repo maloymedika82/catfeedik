@@ -3,6 +3,9 @@
 !backend/**
 backend/tests
 **/__pycache__
+!alembic.ini
+!migrations
+!migrations/**
 !src
 !src/**
 !public
