@@ -48,6 +48,21 @@ curl --fail https://app.your-domain.ru/api/health
 
 ## Подключение Telegram
 
+### Вариант для VPS за NAT без выделенного IP
+
+Если провайдер не направляет публичные TCP 80/443 на VPS, можно использовать Tailscale Funnel. Он выдаёт постоянный публичный HTTPS-адрес вида `https://имя-сервера.имя-сети.ts.net` без собственного домена. Нужен аккаунт Tailscale, включённые MagicDNS, HTTPS и Funnel; у Funnel есть ограничения полосы пропускания, поэтому проверьте загрузку и просмотр видео под ожидаемой нагрузкой. Внешний адрес зависит от сохранения устройства в аккаунте и работы Tailscale. Подробности: https://tailscale.com/docs/features/tailscale-funnel.
+
+На сервере с уже установленным Tailscale используйте `tailscale up --hostname=catfeedik-test` и откройте выданную ссылку входа в своём браузере. Для локального HTTP-входа применяйте оба Compose-файла:
+
+```sh
+docker compose --env-file .env.production -f compose.production.yaml -f compose.funnel.yaml up -d --build
+curl --fail http://127.0.0.1:8080/api/health
+tailscale funnel --bg --yes 8080
+tailscale funnel status
+```
+
+Compose-override публикует веб-сервис только на `127.0.0.1:8080`; Tailscale выдаёт внешний HTTPS. При каждом последующем обновлении используйте оба Compose-файла. Сначала проверьте публичный HTTPS, затем укажите полученный адрес в Telegram. Не включайте одновременно старую публикацию Caddy на 80/443 через один только `compose.production.yaml`.
+
 В @BotFather выберите /mybots → @animalfeedikbot → Bot Settings → Menu Button → Configure menu button. Укажите HTTPS-адрес приложения и подпись «Открыть приложение». Откройте бота и нажмите эту кнопку. Это проверенный сервером Telegram-вход; открытие URL в обычном браузере не выдаёт роль Owner.
 
 Для проверки Owner нажмите «Открыть админпанель» в приложении после входа. Сессия хранится в sessionStorage, отдельная вкладка может её не получить. Перед публичным запуском проверьте на Android и iOS запись, GPS, загрузку, просмотр видео, профиль, модерацию и задания. Никакого webhook для открытия меню не требуется; обработчик сообщений бота пока не реализован.
