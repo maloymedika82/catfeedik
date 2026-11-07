@@ -6,6 +6,8 @@ backend/tests
 !alembic.ini
 !migrations
 !migrations/**
+!scripts
+!scripts/check-ai.py
 !src
 !src/**
 !public
