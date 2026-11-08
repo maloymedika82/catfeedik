@@ -30,7 +30,7 @@ def test_bot_replies_only_to_private_commands(monkeypatch):
     assert calls[0][1]['reply_markup']['inline_keyboard'][0][0]['web_app']['url'] == 'https://catfeedik-test.tail16d0b1.ts.net/'
 
 
-def test_signed_avatar_preference_and_durable_notification(setup,monkeypatch):
+def test_signed_avatar_and_in_app_approval_without_chat_notification(setup,monkeypatch):
     client,factory=setup
     monkeypatch.setenv('TELEGRAM_BOT_TOKEN','test-bot-token')
     monkeypatch.setenv('APP_DOMAIN','catfeedik-test.tail16d0b1.ts.net')
@@ -46,16 +46,9 @@ def test_signed_avatar_preference_and_durable_notification(setup,monkeypatch):
     assert client.post(f'/api/admin/feedings/{fid}/decision',headers=admin,
                        json={'decision':'APPROVED','reason':'Кормление подтверждено'}).status_code==200
     with factory() as db:
-        pending=db.scalar(select(Notification).where(Notification.feeding_id==fid))
-        assert pending and pending.kind=='APPROVED' and pending.status=='PENDING'
-    sent=[]
-    monkeypatch.setattr(bot,'request',lambda _client,method,payload:sent.append((method,payload)))
-    assert bot.deliver_notifications(None,factory)==1
-    assert bot.deliver_notifications(None,factory)==0
-    assert len(sent)==1 and sent[0][1]['chat_id']==81234
-    assert 'Поинты начислены' in sent[0][1]['text']
-    changed=client.patch('/api/me/notifications',headers=headers,json={'enabled':False})
-    assert changed.status_code==200 and changed.json()['notify_enabled'] is False
+        assert db.scalar(select(Notification).where(Notification.feeding_id==fid)) is None
+    assert client.get('/api/me/feedings',headers=headers).json()[0]['status']=='APPROVED'
+    assert sum(item['delta'] for item in client.get('/api/me/points',headers=headers).json())==10
 
 
 def test_telegram_photo_url_rejects_unsafe_schemes_and_credentials():
@@ -64,7 +57,7 @@ def test_telegram_photo_url_rejects_unsafe_schemes_and_credentials():
     assert telegram_photo_url('http://t.me/i/userpic/320/a.jpg')==''
 
 
-def test_failed_delivery_stays_queued_for_retry(setup,monkeypatch):
+def test_in_app_rejection_without_chat_notification(setup,monkeypatch):
     client,factory=setup
     monkeypatch.setenv('TELEGRAM_BOT_TOKEN','test-bot-token')
     monkeypatch.setenv('APP_DOMAIN','catfeedik-test.tail16d0b1.ts.net')
@@ -73,9 +66,8 @@ def test_failed_delivery_stays_queued_for_retry(setup,monkeypatch):
     admin=admin_headers(client,factory,monkeypatch)
     assert client.post(f'/api/admin/feedings/{fid}/decision',headers=admin,
                        json={'decision':'REJECTED','reason':'Животное не ест'}).status_code==200
-    def unavailable(*_):raise RuntimeError('Telegram unavailable')
-    monkeypatch.setattr(bot,'request',unavailable)
-    assert bot.deliver_notifications(None,factory,now=1000)==0
     with factory() as db:
-        item=db.scalar(select(Notification).where(Notification.feeding_id==fid))
-        assert item.status=='PENDING' and item.attempts==1 and item.next_attempt_at>1000
+        assert db.scalar(select(Notification).where(Notification.feeding_id==fid)) is None
+    history=client.get('/api/me/feedings',headers={'Authorization':'Bearer '+client.post('/api/auth/telegram',json={'init_data':signed()}).json()['access_token']}).json()
+    assert history[0]['status']=='REJECTED'
+    assert history[0]['reason']=='Животное не ест'

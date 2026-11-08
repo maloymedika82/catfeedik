@@ -1,8 +1,8 @@
 import os
 import time
 import uuid
-from sqlalchemy import create_engine, event, inspect, ForeignKey, UniqueConstraint, String, BigInteger, Float, Boolean, Integer, Text
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session as ORMSession, mapped_column, sessionmaker
+from sqlalchemy import create_engine, event, ForeignKey, UniqueConstraint, String, BigInteger, Float, Boolean, Integer, Text
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 class Base(DeclarativeBase):
     pass
@@ -21,7 +21,7 @@ class User(Base):
     role: Mapped[str] = mapped_column(String, default='USER')
     wallet: Mapped[str] = mapped_column(String(200), default='')
     photo_url: Mapped[str] = mapped_column(String(2048), default='')
-    notify_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[int] = mapped_column(BigInteger, default=lambda: int(time.time()))
 
 class Session(Base):
@@ -62,16 +62,6 @@ class Notification(Base):
     claimed_at: Mapped[int] = mapped_column(BigInteger, default=0)
     created_at: Mapped[int] = mapped_column(BigInteger, default=lambda: int(time.time()))
     sent_at: Mapped[int] = mapped_column(BigInteger, default=0)
-
-@event.listens_for(ORMSession, 'before_flush')
-def queue_feeding_updates(session, flush_context, instances):
-    for feeding in session.dirty:
-        if not isinstance(feeding, Feeding) or feeding.status not in ('REVIEW', 'APPROVED', 'REJECTED'):
-            continue
-        if not inspect(feeding).attrs.status.history.has_changes():
-            continue
-        session.add(Notification(event_key=f'feeding:{feeding.id}:{feeding.status}',
-                                 user_id=feeding.user_id, feeding_id=feeding.id, kind=feeding.status))
 
 class Points(Base):
     __tablename__ = 'points_ledger'

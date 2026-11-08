@@ -5,8 +5,6 @@ import sys
 import time
 
 import httpx
-from sqlalchemy import or_, select
-from .db import SessionLocal, Notification, User, Feeding
 
 
 STATE = Path('/data/bot/offset')
@@ -85,52 +83,6 @@ def save_offset(value):
     temporary.replace(STATE)
 
 
-def notification_text(kind, feeding):
-    city=feeding.city if feeding else 'вашем городе'
-    if kind=='APPROVED':
-        return f'Кормление в городе {city} подтверждено. Поинты начислены; подробности и видео — в профиле Catfeedik.'
-    if kind=='REJECTED':
-        reason=(feeding.decision_reason if feeding else '').strip()[:700]
-        return f'Видео кормления в городе {city} отклонено. {reason}\nЕсли не согласны, подайте апелляцию в профиле Catfeedik.'
-    return f'Видео кормления в городе {city} передано на ручную проверку. Статус можно посмотреть в профиле Catfeedik.'
-
-
-def deliver_notifications(client, factory=SessionLocal, now=None):
-    now=int(time.time()) if now is None else now
-    delivered=0
-    for _ in range(20):
-        with factory() as db:
-            item=db.scalar(select(Notification).where(
-                or_((Notification.status=='PENDING') & (Notification.next_attempt_at<=now),
-                    (Notification.status=='SENDING') & (Notification.claimed_at<=now-120)))
-                .order_by(Notification.created_at,Notification.id).limit(1).with_for_update(skip_locked=True))
-            if not item:break
-            item.status='SENDING';item.claimed_at=now
-            notification_id=item.id;kind=item.kind
-            user=db.get(User,item.user_id);feeding=db.get(Feeding,item.feeding_id)
-            if not user or user.telegram_id<=0 or not user.notify_enabled:
-                item.status='SKIPPED';db.commit();continue
-            chat_id=user.telegram_id;text=notification_text(kind,feeding)
-            db.commit()
-        try:
-            request(client,'sendMessage',{'chat_id':chat_id,'text':text,'reply_markup':{'inline_keyboard':[[
-                {'text':'Открыть Catfeedik','web_app':{'url':app_url()}}]]}})
-        except RuntimeError:
-            with factory() as db:
-                item=db.get(Notification,notification_id)
-                if item and item.status=='SENDING':
-                    item.attempts+=1
-                    item.status='FAILED' if item.attempts>=8 else 'PENDING'
-                    item.next_attempt_at=now+min(3600,30*2**min(item.attempts,7))
-                    db.commit()
-        else:
-            with factory() as db:
-                item=db.get(Notification,notification_id)
-                if item and item.status=='SENDING':
-                    item.status='SENT';item.sent_at=now;db.commit();delivered+=1
-    return delivered
-
-
 def run():
     app_url()
     with httpx.Client(timeout=40, follow_redirects=False) as client:
@@ -151,7 +103,6 @@ def run():
                     handle(client, update)
                     offset = update['update_id'] + 1
                     save_offset(offset)
-                deliver_notifications(client)
             except RuntimeError:
                 print('Telegram polling error; retrying', file=sys.stderr, flush=True)
                 time.sleep(5)

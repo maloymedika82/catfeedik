@@ -136,15 +136,6 @@ def edit_me(data: ProfileEdit,db: DB,user: CurrentUser):
     db.commit()
     return profile(db,user)
 
-class NotificationPreference(BaseModel):
-    enabled: bool
-
-@app.patch('/api/me/notifications')
-def edit_notification_preference(data: NotificationPreference,db: DB,user: CurrentUser):
-    user.notify_enabled=data.enabled
-    db.commit()
-    return profile(db,user)
-
 @app.get('/api/me/points')
 def point_history(db: DB,user: CurrentUser):
     return [dict(id=p.id,delta=p.delta,reason=p.reason,created_at=p.created_at) for p in db.scalars(select(Points).where(Points.user_id==user.id).order_by(Points.created_at.desc()).limit(200))]
