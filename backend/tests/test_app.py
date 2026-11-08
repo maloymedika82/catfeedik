@@ -128,6 +128,34 @@ def test_upload_retry_and_completion_are_idempotent(setup,monkeypatch):
         assert len(db.scalars(select(Feeding)).all())==1
         assert len(db.scalars(select(Points)).all())==0
 
+def test_one_submitted_video_per_hour_rejection_releases_pause(setup):
+    client,factory=setup;headers=login(client)
+    body=dict(city_id='524901',mime_type='video/mp4',size=10)
+    first=client.post('/api/feedings',headers=headers,json={**body,'request_key':'hourly-first-1234567890'})
+    assert first.status_code==200,first.text
+    fid=first.json()['id']
+    assert client.put('/api'+first.json()['upload_path'],headers={**headers,'Content-Type':'video/mp4'},content=b'0123456789').status_code==204
+    assert client.post(f'/api/feedings/{fid}/complete',headers=headers).status_code==200
+    blocked=client.post('/api/feedings',headers=headers,json={**body,'request_key':'hourly-second-1234567890'})
+    assert blocked.status_code==429
+    assert client.post('/api/feedings',headers=headers,json={**body,'request_key':'hourly-first-1234567890'}).json()['id']==fid
+    with factory() as db:
+        item=db.get(Feeding,fid)
+        assert item.submitted_at>0
+        item.status='REJECTED';db.commit()
+    assert client.post('/api/feedings',headers=headers,json={**body,'request_key':'hourly-second-1234567890'}).status_code==200
+
+def test_admin_video_history_includes_decided_videos(setup,monkeypatch):
+    client,factory=setup;headers=login(client)
+    uid=client.get('/api/me',headers=headers).json()['id']
+    fid,_=seed_feeding(factory,uid)
+    admin=admin_headers(client,factory,monkeypatch)
+    assert client.post(f'/api/admin/feedings/{fid}/decision',headers=admin,
+        json={'decision':'REJECTED','reason':'Нет кормления'}).status_code==200
+    assert client.get('/api/admin/videos',headers=headers).status_code==403
+    history=client.get('/api/admin/videos',headers=admin).json()
+    assert history['items'][0]['id']==fid and history['items'][0]['status']=='REJECTED'
+
 def test_missing_storage_does_not_create_feeding(setup,monkeypatch):
     client,factory=setup;headers=login(client)
     from fastapi import HTTPException

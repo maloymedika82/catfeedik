@@ -142,7 +142,13 @@ def point_history(db: DB,user: CurrentUser):
 
 @app.get('/api/me/feedings')
 def my_feedings(db: DB,user: CurrentUser):
-    return [dict(id=f.id,city=f.city,status=f.status,created_at=f.created_at,reason=f.decision_reason) for f in db.scalars(select(Feeding).where(Feeding.user_id==user.id).order_by(Feeding.created_at.desc()).limit(200))]
+    return [dict(id=f.id,city=f.city,status=f.status,created_at=f.created_at,submitted_at=f.submitted_at,reason=f.decision_reason) for f in db.scalars(select(Feeding).where(Feeding.user_id==user.id).order_by(Feeding.created_at.desc()).limit(200))]
+
+@app.get('/api/me/feeding-limit')
+def feeding_limit(db: DB,user: CurrentUser):
+    last=db.scalar(select(func.max(Feeding.submitted_at)).where(Feeding.user_id==user.id,
+        Feeding.status.in_(['PROCESSING','REVIEW','APPROVED']),Feeding.submitted_at>int(time.time())-3600))
+    return {'next_allowed_at':last+3600 if last else 0}
 
 @app.get('/api/stats')
 def stats(db: DB):
@@ -239,6 +245,10 @@ def create_feeding(data: Upload,db: DB,user: CurrentUser):
     if feeding and (feeding.city_id!=place['id'] or feeding.size!=data.size or feeding.mime_type!=data.mime_type):
         raise HTTPException(409,'Повторная загрузка должна содержать тот же файл и метаданные')
     if not feeding:
+        last=db.scalar(select(func.max(Feeding.submitted_at)).where(Feeding.user_id==user.id,
+            Feeding.status.in_(['PROCESSING','REVIEW','APPROVED']),Feeding.submitted_at>int(time.time())-3600))
+        if last:
+            raise HTTPException(429,'После отправки предыдущего видео нужен час ожидания. Если его отклонят, пауза снимется.')
         recent=db.scalar(select(func.count()).select_from(Feeding).where(
             Feeding.user_id==user.id,Feeding.created_at>=int(time.time())-3600))
         if recent>=12:
@@ -343,6 +353,11 @@ def complete(feeding_id:str,db: DB,user: CurrentUser):
     path=object_path(feeding.object_key)
     if not path.is_file() or path.stat().st_size!=feeding.size:
         raise HTTPException(409,'Видео не загружено полностью. Повторите отправку.')
+    last=db.scalar(select(func.max(Feeding.submitted_at)).where(Feeding.user_id==user.id,
+        Feeding.id!=feeding.id,Feeding.status.in_(['PROCESSING','REVIEW','APPROVED']),Feeding.submitted_at>int(time.time())-3600))
+    if last:
+        raise HTTPException(429,'После отправки предыдущего видео нужен час ожидания. Если его отклонят, пауза снимется.')
+    feeding.submitted_at=int(time.time())
     feeding.status='PROCESSING'
     db.add(VideoAsset(feeding_id=feeding.id,city_id=feeding.city_id or nearest_city(feeding.latitude,feeding.longitude)['id']))
     db.commit()
@@ -351,6 +366,16 @@ def complete(feeding_id:str,db: DB,user: CurrentUser):
 @app.get('/api/admin/queue')
 def queue(db: DB,admin: Admin):
     return [dict(id=f.id,user_id=f.user_id,city=f.city,created_at=f.created_at,claimed_by=f.claimed_by,status=f.status) for f in db.scalars(select(Feeding).where(Feeding.status=='REVIEW').order_by(Feeding.created_at).limit(100))]
+
+@app.get('/api/admin/videos')
+def admin_videos(db: DB,admin: Admin,offset:int=0,limit:int=30):
+    if offset<0 or not 1<=limit<=100:
+        raise HTTPException(422,'Недопустимая страница')
+    rows=db.execute(select(Feeding,User).join(User,User.id==Feeding.user_id)
+        .order_by(Feeding.created_at.desc(),Feeding.id.desc()).offset(offset).limit(limit+1)).all()
+    return {'items':[dict(id=f.id,name=u.name,city=f.city,status=f.status,
+        created_at=f.created_at,submitted_at=f.submitted_at,reason=f.decision_reason) for f,u in rows[:limit]],
+        'has_more':len(rows)>limit}
 
 @app.post('/api/admin/feedings/{feeding_id}/claim')
 def claim(feeding_id:str,db: DB,admin: Admin):
@@ -427,7 +452,7 @@ def release(feeding_id:str,db: DB,admin: Admin):
 
 
 @app.get('/api/media/{feeding_id}')
-def private_media(feeding_id:str,db: DB,
+def private_media(feeding_id:str,db: DB,download:bool=False,
                   authorization: Annotated[str | None,Header()]=None,
                   media_session: Annotated[str | None,Cookie(alias='catfeedik_media')]=None):
     # Video elements cannot set bearer headers. Their same-origin HttpOnly cookie
@@ -443,6 +468,7 @@ def private_media(feeding_id:str,db: DB,
     if not path.is_file():
         raise HTTPException(404,'Файл видео не найден на сервере')
     return FileResponse(path,media_type=feeding.mime_type,
+                        filename=f'catfeedik-{feeding.id}.{("webm" if feeding.mime_type=="video/webm" else "mp4")}' if download else None,
                         headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
 
 

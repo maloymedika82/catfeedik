@@ -48,6 +48,7 @@ class Feeding(Base):
     created_at: Mapped[int] = mapped_column(BigInteger, default=lambda: int(time.time()))
     claimed_by: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
     decision_reason: Mapped[str] = mapped_column(Text, default='')
+    submitted_at: Mapped[int] = mapped_column(BigInteger, default=0)
 
 class Notification(Base):
     __tablename__ = 'notifications'

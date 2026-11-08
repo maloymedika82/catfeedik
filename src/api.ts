@@ -1,6 +1,6 @@
 export type User={id:string;name:string;city:string;language:'ru'|'en';points:number;feedings:number;frozen:boolean;role:string;wallet:string;photo_url:string};
 export type Config={telegram_configured:boolean;storage_configured:boolean;storage_backend:'local';demo_login_enabled:boolean;demo_admin_enabled:boolean;ai_moderation_enabled:boolean;max_video_bytes:number|null;money_enabled:false;bot_username:string;ai_configured:boolean};
-export type Feeding={id:string;city:string;status:string;created_at:number;reason:string};
+export type Feeding={id:string;city:string;status:string;created_at:number;submitted_at:number;reason:string};
 export type Point={id:string;delta:number;reason:string;created_at:number};
 export type Leader={rank:number;name:string;city:string;points:number;feedings:number;photo_url:string};
 let token=sessionStorage.getItem('catfeedik-session')||'';
