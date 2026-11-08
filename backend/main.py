@@ -23,7 +23,7 @@ from .awards import award
 from .ai import configured as ai_configured
 from .dependencies import DB,CurrentUser,Admin,active,totals,profile,authenticated_user
 from .ai_control import enabled as ai_enabled
-from .auth import verify_init_data
+from .auth import verify_init_data, telegram_photo_url
 from .local_storage import storage_root, object_path, check_space, publish_file, cleanup_abandoned_uploads
 from .db import Base, engine, get_db, User, Session, Feeding, Points, Audit, Leaderboard, SnapshotRun, VideoAsset, AICheck, Like, uid
 
@@ -97,6 +97,8 @@ def telegram_login(data: Login,response: Response,db: DB):
         user=User(telegram_id=tg['id'],name=tg.get('first_name','Участник')[:200],language='en' if tg.get('language_code','').startswith('en') else 'ru')
         db.add(user)
         db.flush()
+    if 'photo_url' in tg:
+        user.photo_url=telegram_photo_url(tg['photo_url'])
     owner_ids={int(v) for v in (os.getenv('OWNER_TELEGRAM_IDS') or '2022054034').split(',') if v.strip().isdigit()}
     user.role='OWNER' if tg['id'] in owner_ids else ('USER' if user.role=='OWNER' else user.role)
     return login_result(db,user,response)
@@ -131,6 +133,15 @@ def edit_me(data: ProfileEdit,db: DB,user: CurrentUser):
     active(user)
     for k,v in data.model_dump().items():
         setattr(user,k,v.strip())
+    db.commit()
+    return profile(db,user)
+
+class NotificationPreference(BaseModel):
+    enabled: bool
+
+@app.patch('/api/me/notifications')
+def edit_notification_preference(data: NotificationPreference,db: DB,user: CurrentUser):
+    user.notify_enabled=data.enabled
     db.commit()
     return profile(db,user)
 
@@ -187,7 +198,15 @@ def leaderboard(db: DB,offset:int=0,limit:int=50):
         db.add(SnapshotRun(hour=hour))
         db.commit()
     records=db.execute(select(Leaderboard,User).join(User,User.id==Leaderboard.user_id).where(Leaderboard.hour==hour).order_by(Leaderboard.rank).offset(offset).limit(limit)).all()
-    return {'updated_at':hour*3600,'next_update':(hour+1)*3600,'items':[dict(rank=row.rank,name=user.name,city=user.city,points=row.points,feedings=row.feedings) for row,user in records]}
+    return {'updated_at':hour*3600,'next_update':(hour+1)*3600,'items':[dict(rank=row.rank,name=user.name,city=user.city,points=row.points,feedings=row.feedings,photo_url=user.photo_url) for row,user in records]}
+
+@app.get('/api/me/rank')
+def my_rank(db: DB,user: CurrentUser):
+    snapshot=leaderboard(db,0,1)
+    hour=snapshot['updated_at']//3600
+    rank=db.scalar(select(Leaderboard.rank).where(Leaderboard.hour==hour,Leaderboard.user_id==user.id))
+    total=db.scalar(select(func.count()).select_from(Leaderboard).where(Leaderboard.hour==hour))
+    return {'rank':rank,'participants':total,'updated_at':snapshot['updated_at']}
 
 class Upload(BaseModel):
     request_key: str = Field(min_length=16,max_length=80,pattern=r'^[a-zA-Z0-9-]+$')
@@ -422,7 +441,7 @@ def public_feed(db: DB,city_id:str,offset:int=0,limit:int=10):
          .join(User,User.id==Feeding.user_id).where(VideoAsset.city_id==city_id,VideoAsset.status=='READY',
           Feeding.status=='APPROVED',User.frozen==False).order_by(Feeding.created_at.desc(),Feeding.id.desc())
          .offset(offset).limit(limit+1)).all()
-    return {'items':[{'id':f.id,'name':u.name,'city':f.city,'created_at':f.created_at,
+    return {'items':[{'id':f.id,'name':u.name,'photo_url':u.photo_url,'city':f.city,'created_at':f.created_at,
             'video_url':f'/api/public/videos/{f.id}','poster_url':f'/api/public/videos/{f.id}/poster',
             'likes':db.scalar(select(func.count()).select_from(Like).where(Like.feeding_id==f.id))}
             for f,v,u in rows[:limit]],'has_more':len(rows)>limit}

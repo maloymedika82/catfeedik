@@ -200,6 +200,20 @@ def test_snapshot_stays_fixed_within_hour_even_when_empty(setup):
         db.commit()
     assert client.get('/api/leaderboard').json()['items']==[]
 
+def test_personal_rank_uses_hourly_snapshot(setup):
+    client,factory=setup;headers=login(client);user=client.get('/api/me',headers=headers).json()
+    with factory() as db:
+        other=User(telegram_id=7654321,name='Другой участник')
+        db.add(other);db.flush()
+        db.add(Points(user_id=user['id'],event_key='rank:own',delta=10,reason='Кормление'))
+        db.add(Points(user_id=other.id,event_key='rank:other',delta=20,reason='Кормление'))
+        db.commit()
+    result=client.get('/api/me/rank',headers=headers)
+    assert result.status_code==200
+    assert result.json()['rank']==2
+    assert result.json()['participants']==2
+    assert result.json()['updated_at']==client.get('/api/leaderboard').json()['updated_at']
+
 def test_freeze_rejects_pending_and_preserves_history(setup,monkeypatch):
     client,factory=setup;headers=login(client);user=client.get('/api/me',headers=headers).json()
     fid,_=seed_feeding(factory,user['id']);admin=admin_headers(client,factory,monkeypatch)

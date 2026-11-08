@@ -42,5 +42,5 @@ def totals(db, user_id):
 
 def profile(db,user):
     points,count = totals(db,user.id)
-    return dict(id=user.id,name=user.name,city=user.city,language=user.language,points=points,feedings=count,frozen=user.frozen,role=user.role,wallet=user.wallet)
+    return dict(id=user.id,name=user.name,city=user.city,language=user.language,points=points,feedings=count,frozen=user.frozen,role=user.role,wallet=user.wallet,photo_url=user.photo_url,notify_enabled=user.notify_enabled)
 

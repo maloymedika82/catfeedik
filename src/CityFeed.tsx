@@ -1,13 +1,14 @@
 import {useEffect,useRef,useState} from 'react';
 import {api} from './api';
 import type {City} from './WorldMap';
-type Item={id:string;name:string;city:string;created_at:number;video_url:string;poster_url:string;likes:number;liked?:boolean};
+import {AvatarImage} from './AvatarImage';
+type Item={id:string;name:string;photo_url:string;city:string;created_at:number;video_url:string;poster_url:string;likes:number;liked?:boolean};
 function VideoCard({item,canLike}:{item:Item;canLike:boolean}){
  const video=useRef<HTMLVideoElement>(null),card=useRef<HTMLElement>(null);
  const [likes,setLikes]=useState(item.likes),[liked,setLiked]=useState(item.liked??false),[busy,setBusy]=useState(false),[error,setError]=useState('');
  useEffect(()=>{const observer=new IntersectionObserver(entries=>{if(!entries[0].isIntersecting)video.current?.pause()},{threshold:.6});if(card.current)observer.observe(card.current);return()=>{observer.disconnect();video.current?.pause()}},[]);
  async function toggle(){setBusy(true);setError('');try{const result=await api<{liked:boolean;likes:number}>(`/feedings/${item.id}/like`,{method:liked?'DELETE':'PUT'});setLikes(result.likes);setLiked(result.liked)}catch(e){setError((e as Error).message)}finally{setBusy(false)}}
- return <article className="feed-video-card" ref={card}><video ref={video} src={item.video_url} poster={item.poster_url} controls playsInline preload="none"/><div className="feed-video-meta"><div><strong>{item.name}</strong><small>{new Date(item.created_at*1000).toLocaleDateString('ru-RU')} · {item.city}</small></div><button disabled={!canLike||busy} aria-pressed={liked} aria-label={liked?'Убрать лайк':'Поставить лайк'} onClick={toggle}><svg width="20" height="20" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5" fill={liked?'currentColor':'none'} aria-hidden="true"><path d="M12 20S3 14.5 3 8.5C3 3 9 2 12 6c3-4 9-3 9 2.5C21 14.5 12 20 12 20Z"/></svg>{likes}</button></div>{!canLike&&<small className="feed-signin-note">Лайки доступны после входа через Telegram</small>}{error&&<p role="alert">{error}</p>}</article>;
+ return <article className="feed-video-card" ref={card}><video ref={video} src={item.video_url} poster={item.poster_url} controls playsInline preload="none"/><div className="feed-video-meta"><div className="feed-author"><span className="avatar"><AvatarImage name={item.name} url={item.photo_url}/></span><div><strong>{item.name}</strong><small>{new Date(item.created_at*1000).toLocaleDateString('ru-RU')} · {item.city}</small></div></div><button disabled={!canLike||busy} aria-pressed={liked} aria-label={liked?'Убрать лайк':'Поставить лайк'} onClick={toggle}><svg width="20" height="20" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5" fill={liked?'currentColor':'none'} aria-hidden="true"><path d="M12 20S3 14.5 3 8.5C3 3 9 2 12 6c3-4 9-3 9 2.5C21 14.5 12 20 12 20Z"/></svg>{likes}</button></div>{!canLike&&<small className="feed-signin-note">Лайки доступны после входа через Telegram</small>}{error&&<p role="alert">{error}</p>}</article>;
 }
 export function CityFeed({city,canLike}:{city:City;canLike:boolean}){
  const [items,setItems]=useState<Item[]>([]),[more,setMore]=useState(false),[error,setError]=useState(''),[busy,setBusy]=useState(false),offset=useRef(0);

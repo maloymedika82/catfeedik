@@ -3,7 +3,18 @@ import hashlib
 import hmac
 import json
 import time
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
+
+
+def telegram_photo_url(value) -> str:
+    if not isinstance(value, str) or len(value)>2048:
+        return ''
+    try:
+        parsed=urlsplit(value)
+        safe=parsed.scheme=='https' and bool(parsed.hostname) and not parsed.username and not parsed.password and not parsed.port and not parsed.fragment
+    except ValueError:
+        return ''
+    return value if safe else ''
 
 
 def verify_init_data(raw: str, bot_token: str, now: int | None = None) -> dict:
