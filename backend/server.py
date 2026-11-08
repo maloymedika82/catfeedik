@@ -12,7 +12,7 @@ def validate(environment):
         if environment.get(name)!='0':problems.append(name)
     if not environment.get('DATABASE_URL','').startswith('postgresql+psycopg://'):problems.append('DATABASE_URL')
     if not re.fullmatch(r'\d+:[A-Za-z0-9_-]+',environment.get('TELEGRAM_BOT_TOKEN','')):problems.append('TELEGRAM_BOT_TOKEN')
-    for name in ('MAX_VIDEO_BYTES','LOCATION_RADIUS_METERS','MAX_GPS_ACCURACY_METERS'):
+    for name in ('MAX_VIDEO_BYTES',):
         try:
             value=float(environment.get(name,''))
             if not math.isfinite(value) or value<=0:raise ValueError()

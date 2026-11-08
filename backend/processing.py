@@ -8,7 +8,8 @@ from fastapi import HTTPException
 from .db import SessionLocal,User,Feeding,VideoAsset,AICheck,AIRetry
 from .local_storage import storage_root,object_path,publish_file,sha256_file
 from .video_processing import normalize,sample_frames,InvalidVideo
-from .geography import nearest_city
+from .geography import nearest_city,city_info
+from .fingerprint import video_fingerprint,has_similar
 from .ai import moderate,ProviderUnavailable,configured
 from .awards import award
 from .ai_control import enabled,reserve_request,schedule_failure,defer_until
@@ -28,7 +29,7 @@ def process_video(feeding_id,session_factory=None):
         feeding=db.get(Feeding,feeding_id)
         key=feeding.object_key
         user_id=feeding.user_id
-        city=nearest_city(feeding.latitude,feeding.longitude)
+        city=city_info(feeding.city_id) or nearest_city(feeding.latitude,feeding.longitude)
         db.commit()
     published=[]
     try:
@@ -36,8 +37,13 @@ def process_video(feeding_id,session_factory=None):
         digest=sha256_file(source)
         with tempfile.TemporaryDirectory(dir=storage_root()/'_incoming',prefix='process-') as directory:
             video,poster,duration=normalize(source,directory)
+            try:
+                fingerprint=video_fingerprint(video)
+            except (OSError,ValueError):
+                fingerprint=[]
             with factory() as db:
                 duplicate=bool(db.scalar(select(VideoAsset.feeding_id).where(VideoAsset.source_hash==digest,VideoAsset.status=='READY',VideoAsset.feeding_id!=feeding_id).limit(1)))
+                similar=has_similar(db,VideoAsset,fingerprint,feeding_id) if fingerprint else False
             verdict=None;ai_status='NOT_CONFIGURED';ai_reason='AI не настроен: требуется ручная проверка'
             ai_error=None;deferred=0;attempted=False
             with factory() as db:automatic=enabled(db)
@@ -70,10 +76,13 @@ def process_video(feeding_id,session_factory=None):
                     return {'status':'lease_lost'}
                 if db.bind.dialect.name=='postgresql':
                     db.execute(text('SELECT pg_advisory_xact_lock(:lock)'),{'lock':int(digest[:15],16)})
+                    db.execute(text('SELECT pg_advisory_xact_lock(714292)'))
                 duplicate=duplicate or bool(db.scalar(select(VideoAsset.feeding_id).where(VideoAsset.source_hash==digest,VideoAsset.status=='READY',VideoAsset.feeding_id!=feeding_id).limit(1)))
+                similar=similar or (has_similar(db,VideoAsset,fingerprint,feeding_id) if fingerprint else False)
+                flags=(["DUPLICATE_UPLOAD"] if duplicate else [])+(["SIMILAR_VIDEO"] if similar else [])+(["FINGERPRINT_UNAVAILABLE"] if not fingerprint else [])
                 asset.status='READY';asset.source_hash=digest;asset.output_key=output_key;asset.poster_key=poster_key
                 asset.duration=duration;asset.city_id=city['id'];asset.updated_at=int(time.time());asset.reason=''
-                asset.flags=json.dumps(['DUPLICATE_UPLOAD'] if duplicate else [])
+                asset.flags=json.dumps(flags);asset.fingerprint=json.dumps(fingerprint)
                 check=db.get(AICheck,feeding_id)
                 if not check:check=AICheck(feeding_id=feeding_id);db.add(check)
                 check.status=ai_status;check.model=verdict.provider_model if verdict else (os.getenv('AI_MODEL') or 'auto');check.reason=ai_reason
@@ -85,14 +94,14 @@ def process_video(feeding_id,session_factory=None):
                 db.flush()
                 # Human claims and frozen/final accounts take priority over AI results.
                 if feeding.status=='PROCESSING' and not user.frozen:
-                    feeding.city=city['label'];feeding.status='REVIEW';feeding.decision_reason=ai_reason
-                    if verdict and not duplicate and enabled(db) and verdict.decision=='APPROVE':
+                    feeding.city=city['label'];feeding.status='REVIEW';feeding.decision_reason='Похоже на ранее отправленное видео: нужна ручная проверка' if similar else ai_reason
+                    if verdict and not flags and enabled(db) and verdict.decision=='APPROVE':
                         try:
                             award(db,user,feeding)
                             feeding.status='APPROVED';feeding.decision_reason='Подтверждено AI и серверными проверками'
                         except HTTPException:
                             feeding.decision_reason='AI рекомендует одобрить; требуется проверка ограничений начисления'
-                    elif verdict and not duplicate and enabled(db) and verdict.decision=='REJECT':
+                    elif verdict and not flags and enabled(db) and verdict.decision=='REJECT':
                         feeding.status='REJECTED';feeding.decision_reason=verdict.reason
                 db.commit()
                 return {'status':'READY','feeding_status':feeding.status}

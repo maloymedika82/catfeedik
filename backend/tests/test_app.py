@@ -155,7 +155,7 @@ def test_five_bonus_exactly_once_and_repeat_decision_rejected(setup,monkeypatch)
         assert len(db.scalars(select(Points).where(Points.delta==5)).all())==1
         assert len(db.scalars(select(Audit)).all())==6
 
-def test_same_location_seven_day_rule_and_other_user_isolated(setup,monkeypatch):
+def test_same_city_does_not_block_separate_feedings(setup,monkeypatch):
     client,factory=setup;headers=login(client);user=client.get('/api/me',headers=headers).json()
     first,_=seed_feeding(factory,user['id'],0);second,_=seed_feeding(factory,user['id'],1)
     with factory() as db:
@@ -163,10 +163,8 @@ def test_same_location_seven_day_rule_and_other_user_isolated(setup,monkeypatch)
     admin=admin_headers(client,factory,monkeypatch)
     body={'decision':'APPROVED','reason':'Проверено'}
     assert client.post(f'/api/admin/feedings/{first}/decision',headers=admin,json=body).status_code==200
-    assert client.post(f'/api/admin/feedings/{second}/decision',headers=admin,json=body).status_code==409
-    with factory() as db:
-        db.get(Feeding,first).created_at-=7*86400;db.commit()
     assert client.post(f'/api/admin/feedings/{second}/decision',headers=admin,json=body).status_code==200
+    assert client.get('/api/me',headers=headers).json()['points']==20
 
 def test_claim_is_exclusive_and_user_cannot_admin(setup,monkeypatch):
     client,factory=setup;headers=login(client);user=client.get('/api/me',headers=headers).json()
@@ -183,13 +181,46 @@ def test_frozen_user_cannot_upload_or_save(setup):
         user=db.scalar(select(User).where(User.telegram_id==-1));user.frozen=True;db.commit()
     assert client.patch('/api/me',headers=headers,json={'city':'Москва','wallet':'','language':'ru'}).status_code==403
 
-def test_approval_requires_agreed_location_rules(setup,monkeypatch):
+def test_approval_needs_no_gps_settings(setup,monkeypatch):
     client,factory=setup;headers=login(client);user=client.get('/api/me',headers=headers).json()
     fid,_=seed_feeding(factory,user['id']);admin=admin_headers(client,factory,monkeypatch)
     monkeypatch.delenv('LOCATION_RADIUS_METERS')
     monkeypatch.setenv('APP_ENV','production')
-    assert client.post(f'/api/admin/feedings/{fid}/decision',headers=admin,json={'decision':'APPROVED','reason':'Проверено'}).status_code==503
-    with factory() as db:assert db.scalar(select(Points)) is None
+    assert client.post(f'/api/admin/feedings/{fid}/decision',headers=admin,json={'decision':'APPROVED','reason':'Проверено'}).status_code==200
+    with factory() as db:assert db.scalar(select(Points)) is not None
+
+def test_city_selection_never_stores_precise_coordinates(setup):
+    client,factory=setup;headers=login(client)
+    cities=client.get('/api/city-search',params={'q':'Москва'}).json()
+    moscow=next(city for city in cities if city['id']=='524901')
+    fresh=client.post('/api/feedings',headers=headers,json={
+        'request_key':'city-only-upload-12345','city_id':moscow['id'],
+        'mime_type':'video/mp4','size':10})
+    assert fresh.status_code==200
+    legacy=client.post('/api/feedings',headers=headers,json={
+        'request_key':'legacy-location-12345','city':'ignored','latitude':55.750123,
+        'longitude':37.610987,'accuracy':10,'mime_type':'video/mp4','size':10})
+    assert legacy.status_code==200
+    with factory() as db:
+        for result in (fresh,legacy):
+            feeding=db.get(Feeding,result.json()['id'])
+            assert feeding.city_id==moscow['id']
+            assert (feeding.latitude,feeding.longitude)==(moscow['latitude'],moscow['longitude'])
+            assert feeding.accuracy==0
+    assert client.post('/api/feedings',headers=headers,json={
+        'request_key':'unknown-city-12345','city_id':'invalid','mime_type':'video/mp4','size':10}).status_code==422
+
+def test_many_new_uploads_are_limited_but_retry_still_works(setup):
+    client,_=setup;headers=login(client)
+    first=None
+    for number in range(12):
+        payload={'request_key':f'rate-limit-{number:020}','city_id':'524901','mime_type':'video/mp4','size':10}
+        response=client.post('/api/feedings',headers=headers,json=payload)
+        assert response.status_code==200
+        if number==0:first=(payload,response.json()['id'])
+    assert client.post('/api/feedings',headers=headers,json={
+        'request_key':'rate-limit-overflow-12345','city_id':'524901','mime_type':'video/mp4','size':10}).status_code==429
+    assert client.post('/api/feedings',headers=headers,json=first[0]).json()['id']==first[1]
 
 def test_snapshot_stays_fixed_within_hour_even_when_empty(setup):
     client,factory=setup

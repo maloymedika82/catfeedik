@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session as DBSession
 from .schemas import Reasoned
 from .consent import require_consent
 from .settings import product_number
-from .geography import nearest_city,city_info
+from .geography import nearest_city,city_info,search_cities
 from .awards import award
 from .ai import configured as ai_configured
 from .dependencies import DB,CurrentUser,Admin,active,totals,profile,authenticated_user
@@ -71,7 +71,7 @@ def health(db: DB):
 
 @app.get('/api/config')
 def config(db:DB):
-    return {'telegram_configured':bool(os.getenv('TELEGRAM_BOT_TOKEN')),'storage_configured':bool(storage_root()),'storage_backend':'local','demo_login_enabled':os.getenv('APP_ENV')=='development' and os.getenv('ALLOW_DEV_LOGIN')=='1','demo_admin_enabled':os.getenv('APP_ENV')=='development' and os.getenv('ALLOW_DEV_LOGIN')=='1' and os.getenv('ALLOW_DEV_ADMIN','1')=='1','location_rules_configured':bool(product_number('LOCATION_RADIUS_METERS',100) and product_number('MAX_GPS_ACCURACY_METERS',50)),'max_video_bytes':video_limit(),'ai_configured':ai_configured(),'ai_moderation_enabled':ai_enabled(db),'money_enabled':False,'bot_username':os.getenv('TELEGRAM_BOT_USERNAME') or 'animalfeedikbot'}
+    return {'telegram_configured':bool(os.getenv('TELEGRAM_BOT_TOKEN')),'storage_configured':bool(storage_root()),'storage_backend':'local','demo_login_enabled':os.getenv('APP_ENV')=='development' and os.getenv('ALLOW_DEV_LOGIN')=='1','demo_admin_enabled':os.getenv('APP_ENV')=='development' and os.getenv('ALLOW_DEV_LOGIN')=='1' and os.getenv('ALLOW_DEV_ADMIN','1')=='1','max_video_bytes':video_limit(),'ai_configured':ai_configured(),'ai_moderation_enabled':ai_enabled(db),'money_enabled':False,'bot_username':os.getenv('TELEGRAM_BOT_USERNAME') or 'animalfeedikbot'}
 
 class Login(BaseModel):
     init_data: str = Field(min_length=1,max_length=16000)
@@ -164,6 +164,12 @@ def locate_city(latitude:float,longitude:float):
         raise HTTPException(422,'Недопустимые координаты')
     return nearest_city(latitude,longitude)
 
+@app.get('/api/city-search')
+def city_search(q:str):
+    if not 2<=len(q.strip())<=80:
+        raise HTTPException(422,'Введите минимум две буквы города')
+    return search_cities(q)
+
 @app.get('/api/cities')
 def cities(db: DB):
     rows=db.execute(select(VideoAsset.city_id,func.count()).join(Feeding,Feeding.id==VideoAsset.feeding_id)
@@ -210,16 +216,23 @@ def my_rank(db: DB,user: CurrentUser):
 
 class Upload(BaseModel):
     request_key: str = Field(min_length=16,max_length=80,pattern=r'^[a-zA-Z0-9-]+$')
-    city: str = Field(min_length=1,max_length=100)
-    latitude: float = Field(ge=-90,le=90)
-    longitude: float = Field(ge=-180,le=180)
-    accuracy: float = Field(gt=0,le=100000)
+    city_id: str | None = Field(default=None,max_length=20)
+    city: str | None = Field(default=None,max_length=100)
+    latitude: float | None = Field(default=None,ge=-90,le=90)
+    longitude: float | None = Field(default=None,ge=-180,le=180)
+    accuracy: float | None = Field(default=None,gt=0,le=100000)
     mime_type: Literal['video/mp4','video/webm']
     size: int = Field(gt=0)
 
 @app.post('/api/feedings')
 def create_feeding(data: Upload,db: DB,user: CurrentUser):
     active(user)
+    place=city_info(data.city_id) if data.city_id else None
+    if not place and not data.city_id and data.latitude is not None and data.longitude is not None:
+        # Older clients can finish an upload, but precise coordinates are discarded.
+        place=nearest_city(data.latitude,data.longitude)
+    if not place:
+        raise HTTPException(422,'Выберите город из списка')
     limit=video_limit()
     if not limit:
         raise HTTPException(503,'Лимит видео ещё не утверждён')
@@ -232,13 +245,22 @@ def create_feeding(data: Upload,db: DB,user: CurrentUser):
     feeding=db.scalar(select(Feeding).where(Feeding.user_id==user.id,Feeding.request_key==data.request_key))
     if feeding and feeding.status!='UPLOADING':
         return {'id':feeding.id,'status':feeding.status,'upload_path':None}
-    if feeding and any(getattr(feeding,k)!=v for k,v in data.model_dump().items() if k not in ('request_key','city')):
+    if feeding and (feeding.city_id!=place['id'] or feeding.size!=data.size or feeding.mime_type!=data.mime_type):
         raise HTTPException(409,'Повторная загрузка должна содержать тот же файл и метаданные')
+    if not feeding:
+        recent=db.scalar(select(func.count()).select_from(Feeding).where(
+            Feeding.user_id==user.id,Feeding.created_at>=int(time.time())-3600))
+        if recent>=12:
+            raise HTTPException(429,'За час можно начать не более 12 новых видео. Попробуй позже.')
     root=storage_root()
     check_space(root,data.size)
     if not feeding:
-        payload=data.model_dump();payload['city']=nearest_city(data.latitude,data.longitude)['label']
+        payload=dict(request_key=data.request_key,city=place['label'],city_id=place['id'],
+                     latitude=place['latitude'],longitude=place['longitude'],accuracy=0,
+                     mime_type=data.mime_type,size=data.size)
         feeding=Feeding(id=uid(),user_id=user.id,**payload,object_key=f'originals/{user.id}/{uid()}')
+        if not locked_user.city:
+            locked_user.city=place['label']
         db.add(feeding);db.flush()
     db.commit()
     return {'id':feeding.id,'status':feeding.status,'upload_path':f'/feedings/{feeding.id}/content'}
@@ -331,7 +353,7 @@ def complete(feeding_id:str,db: DB,user: CurrentUser):
     if not path.is_file() or path.stat().st_size!=feeding.size:
         raise HTTPException(409,'Видео не загружено полностью. Повторите отправку.')
     feeding.status='PROCESSING'
-    db.add(VideoAsset(feeding_id=feeding.id,city_id=nearest_city(feeding.latitude,feeding.longitude)['id']))
+    db.add(VideoAsset(feeding_id=feeding.id,city_id=feeding.city_id or nearest_city(feeding.latitude,feeding.longitude)['id']))
     db.commit()
     return {'id':feeding.id,'status':feeding.status}
 

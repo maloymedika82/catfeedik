@@ -43,7 +43,7 @@ with tempfile.TemporaryDirectory(prefix='catfeedik-upload-') as directory:
             wait_http('http://127.0.0.1:5177')
             with sync_playwright() as p:
                 browser=p.chromium.launch(executable_path=os.getenv('CHROMIUM_PATH','/usr/bin/chromium'),headless=True,args=['--no-sandbox','--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream'])
-                context=browser.new_context(permissions=['camera','microphone','geolocation'],geolocation={'latitude':55.75,'longitude':37.61,'accuracy':10})
+                context=browser.new_context(permissions=['camera','microphone'])
                 page=context.new_page()
                 errors=[]
                 page.on('pageerror',lambda e:errors.append(str(e)))
@@ -52,12 +52,14 @@ with tempfile.TemporaryDirectory(prefix='catfeedik-upload-') as directory:
                 page.goto('http://127.0.0.1:5177')
                 page.get_by_role('button',name='Тестовый вход',exact=True).click()
                 page.locator('.login-banner').wait_for(state='hidden')
-                page.get_by_role('button',name='НАЧАТЬ',exact=True).click();page.get_by_role('button',name='Принять и продолжить',exact=True).wait_for();page.set_viewport_size({'width':390,'height':844});page.screenshot(path=str(root/'artifacts'/'participation-terms-mobile.png'),full_page=True);assert page.evaluate('document.documentElement.scrollWidth<=innerWidth');assert page.get_by_role('button',name='Принять и продолжить',exact=True).is_disabled();page.get_by_role('checkbox').check();page.get_by_role('button',name='Принять и продолжить',exact=True).click()
+                page.get_by_role('button',name='Начать запись',exact=False).click();page.get_by_role('button',name='Принять и продолжить',exact=True).wait_for();page.set_viewport_size({'width':390,'height':844});page.screenshot(path=str(root/'artifacts'/'participation-terms-mobile.png'),full_page=True);assert page.evaluate('document.documentElement.scrollWidth<=innerWidth');assert page.get_by_role('button',name='Принять и продолжить',exact=True).is_disabled();page.get_by_role('checkbox').check();page.get_by_role('button',name='Принять и продолжить',exact=True).click()
+                page.get_by_label('В каком городе кормишь?').fill('Москва')
+                page.get_by_role('option',name='Moscow, RU').click()
                 page.get_by_role('button',name='Открыть камеру',exact=True).click()
                 page.get_by_role('button',name='Начать запись',exact=True).click()
                 page.wait_for_timeout(1200)
                 page.get_by_role('button',name='Завершить',exact=True).click()
-                assert page.get_by_label('Ближайший город',exact=True).input_value()=='Moscow, RU'
+                assert page.get_by_text('Город: Moscow, RU',exact=True).is_visible()
                 page.get_by_role('button',name='Отправить на проверку',exact=True).click()
                 page.get_by_text('Видео отправлено',exact=True).wait_for()
                 assert page.get_by_text('Статус: видео обрабатывается.',exact=False).is_visible()
@@ -135,8 +137,8 @@ with tempfile.TemporaryDirectory(prefix='catfeedik-upload-') as directory:
                 original=list((target/'videos'/'originals').glob('*/*'))[0].read_bytes()+b'e2e-second'
                 user_headers={'Authorization':'Bearer '+user_token}
                 second=context.request.post('http://127.0.0.1:5177/api/feedings',headers=user_headers,data={
-                    'request_key':str(uuid.uuid4()),'city':'ignored','latitude':55.80,'longitude':37.61,
-                    'accuracy':10,'mime_type':'video/mp4','size':len(original)})
+                    'request_key':str(uuid.uuid4()),'city_id':'524901',
+                    'mime_type':'video/mp4','size':len(original)})
                 assert second.status==200
                 second_id=second.json()['id']
                 assert context.request.put('http://127.0.0.1:5177/api'+second.json()['upload_path'],headers={**user_headers,'Content-Type':'video/mp4'},data=original).status==204
@@ -200,19 +202,20 @@ with tempfile.TemporaryDirectory(prefix='catfeedik-upload-') as directory:
                 page.get_by_text('Заявка подтверждена, поинты начислены.',exact=True).wait_for()
                 participant=context.request.get('http://127.0.0.1:5177/api/me',headers=user_headers).json()
                 assert participant['points']==32 and participant['feedings']==2,participant
-                # Saved account consent skips the form on later recordings; denied GPS
-                # is explained before requesting camera/microphone again.
+                # Saved account consent skips the form; city selection never asks for GPS.
                 page.evaluate("token=>sessionStorage.setItem('catfeedik-session',token)",user_token)
                 page.goto('http://127.0.0.1:5177')
-                page.get_by_role('button',name='НАЧАТЬ',exact=True).click()
+                page.get_by_role('button',name='Начать запись',exact=False).click()
                 page.get_by_role('button',name='Открыть камеру',exact=True).wait_for()
                 assert page.get_by_role('button',name='Принять и продолжить',exact=True).count()==0
-                page.evaluate("""()=>{window.testMediaCalls=0;navigator.mediaDevices.getUserMedia=async()=>{window.testMediaCalls++;throw Error('unexpected media request')};navigator.geolocation.getCurrentPosition=(_success,failure)=>failure({code:1})}""")
+                page.evaluate("""()=>{window.testGeoCalls=0;navigator.geolocation.getCurrentPosition=()=>{window.testGeoCalls++;throw Error('unexpected GPS request')}}""")
+                page.get_by_label('В каком городе кормишь?').fill('Москва')
+                page.get_by_role('option',name='Moscow, RU').click()
                 page.get_by_role('button',name='Открыть камеру',exact=True).click()
-                page.get_by_text('Доступ к геолокации запрещён.',exact=False).wait_for()
-                assert page.evaluate('window.testMediaCalls')==0
+                page.get_by_role('button',name='Начать запись',exact=True).wait_for()
+                assert page.evaluate('window.testGeoCalls')==0
                 page.set_viewport_size({'width':390,'height':844})
-                page.screenshot(path=str(root/'artifacts'/'location-permission-mobile.png'),full_page=True)
+                page.screenshot(path=str(root/'artifacts'/'city-selection-mobile.png'),full_page=True)
                 page.evaluate("token=>sessionStorage.setItem('catfeedik-session',token)",auth.json()['access_token'])
                 page.goto('http://127.0.0.1:5177/admin.html')
                 page.get_by_role('button',name='Обзор',exact=True).click()

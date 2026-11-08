@@ -166,13 +166,13 @@ def test_vision_adapter_downgrades_unjustified_approval(tmp_path,monkeypatch):
 
 def test_video_limit_development_defaults_production_closed(setup,monkeypatch):
     client,_=setup
-    for name in ('MAX_VIDEO_BYTES','LOCATION_RADIUS_METERS','MAX_GPS_ACCURACY_METERS'):monkeypatch.delenv(name,raising=False)
+    monkeypatch.delenv('MAX_VIDEO_BYTES',raising=False)
     config=client.get('/api/config').json()
-    assert config['max_video_bytes']==20*1024*1024 and config['location_rules_configured']
+    assert config['max_video_bytes']==20*1024*1024
     assert config['money_enabled'] is False
     monkeypatch.setenv('APP_ENV','production')
     config=client.get('/api/config').json()
-    assert config['max_video_bytes'] is None and not config['location_rules_configured']
+    assert config['max_video_bytes'] is None
 
 
 def test_nonseekable_webm_without_duration_is_processed(setup,monkeypatch):

@@ -11,8 +11,6 @@ with tempfile.TemporaryDirectory(prefix='catfeedik-deploy-') as temp:
   AI_MODERATION_ENABLED: "0"
   TELEGRAM_BOT_TOKEN: "123:isolated_test_only"
   MAX_VIDEO_BYTES: "20971520"
-  LOCATION_RADIUS_METERS: "100"
-  MAX_GPS_ACCURACY_METERS: "50"
 services:
   api:
     environment: *settings
