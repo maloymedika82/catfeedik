@@ -1,0 +1,12 @@
+[Unit]
+Description=Verified Catfeedik database and video backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/catfeedik
+ExecStart=/usr/bin/python3 /srv/catfeedik/scripts/backup-production.py --restore-test
+User=root
+UMask=0077
+TimeoutStartSec=30min

@@ -29,7 +29,10 @@ def test_admin_access_dev_session_and_owner_permissions(setup,monkeypatch):
     response=client.post('/api/auth/dev-admin')
     assert response.status_code==200 and response.json()['user']['role']=='ADMIN'
     headers={'Authorization':'Bearer '+response.json()['access_token']}
-    assert client.get('/api/admin/dashboard',headers=headers).status_code==200
+    dashboard=client.get('/api/admin/dashboard',headers=headers)
+    assert dashboard.status_code==200
+    assert dashboard.json()['processing_errors']==0
+    assert dashboard.json()['ai_errors']==0
     assert client.patch('/api/admin/ai',headers=headers,json={'enabled':False,'reason':'Maintenance'}).status_code==403
     monkeypatch.setenv('APP_ENV','production')
     assert client.post('/api/auth/dev-admin').status_code==404

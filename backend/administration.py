@@ -31,6 +31,8 @@ def dashboard(db:DB,admin:Admin):
             'feedings':sum(counts.values()),'statuses':counts,
             'points':db.scalar(select(func.coalesce(func.sum(Points.delta),0))),
             'appeals':db.scalar(select(func.count()).select_from(Appeal).where(Appeal.status=='OPEN')),
+            'processing_errors':db.scalar(select(func.count()).select_from(VideoAsset).where(VideoAsset.status.in_(['ERROR','INVALID']))),
+            'ai_errors':db.scalar(select(func.count()).select_from(AICheck).where(AICheck.status.in_(['ERROR','NOT_CONFIGURED']))),
             'money_enabled':False,'ai_enabled':enabled(db),'ai_configured':configured(),
             'ai_wait_seconds':max(0,next_provider_time(db)-int(time.time()))}
 
