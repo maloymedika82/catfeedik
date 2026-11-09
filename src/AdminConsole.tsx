@@ -5,6 +5,7 @@ import {OwnerSponsors,OwnerTaskApplications} from './OwnerSponsors';
 import '../style.css';
 import './app.css';
 import './admin.css';
+import './designer.css';
 type Person={id:string;name:string;telegram_id:number;city:string;points:number;feedings:number;frozen:boolean;role:string;created_at:number};
 type Dashboard={participants:number;frozen:number;feedings:number;statuses:Record<string,number>;points:number;appeals:number;processing_errors:number;ai_errors:number;money_enabled:false;ai_enabled:boolean;ai_configured:boolean;ai_wait_seconds:number};
 type Entry={id:string;actor:string;action:string;target:string;reason:string;created_at:number};
