@@ -12,9 +12,9 @@ type Dashboard={participants:number;frozen:number;feedings:number;statuses:Recor
 type Entry={id:string;actor:string;action:string;target:string;reason:string;created_at:number};
 type Appeal={id:string;feeding_id:string;name:string;city:string;reason:string;claimed_by:string|null;can_review:boolean};
 const date=(s:number)=>new Date(s*1000).toLocaleString('ru-RU');
-const tabs=[['dashboard','Обзор'],['moderation','Модерация'],['users','Пользователи'],['appeals','Апелляции'],['audit','Журнал']];
+const tabs=[['moderation','Очередь'],['dashboard','Обзор'],['users','Пользователи'],['appeals','Апелляции'],['audit','Журнал']];
 export default function AdminConsole(){
- const [user,setUser]=useState<User|null>(null),[config,setConfig]=useState<Config|null>(null),[loading,setLoading]=useState(true),[message,setMessage]=useState(''),[tab,setTab]=useState('dashboard');
+ const [user,setUser]=useState<User|null>(null),[config,setConfig]=useState<Config|null>(null),[loading,setLoading]=useState(true),[message,setMessage]=useState(''),[tab,setTab]=useState('moderation');
  async function boot(){setLoading(true);setMessage('');try{setConfig(await api('/config'));setUser(await api('/me'))}catch(e){setUser(null);setMessage((e as Error).message)}finally{setLoading(false)}}
  useEffect(()=>{boot()},[]);
  async function devAdmin(){try{const login=await api<{access_token:string;user:User}>('/auth/dev-admin',{method:'POST'});setToken(login.access_token);setUser(login.user)}catch(e){setMessage((e as Error).message)}}
