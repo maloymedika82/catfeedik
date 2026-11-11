@@ -73,6 +73,7 @@ def test_ai_approval_server_award_public_feed_and_likes(setup,real_video,monkeyp
     assert (cities[0]['latitude'],cities[0]['longitude'])!=(55,37)
     feed=client.get('/api/feed',params={'city_id':cities[0]['id']}).json()
     assert len(feed['items'])==1 and 'latitude' not in feed['items'][0] and 'longitude' not in feed['items'][0]
+    assert client.get('/api/feed').json()['items'][0]['id']==fid
     public=client.get(feed['items'][0]['video_url'],headers={'Range':'bytes=0-15'})
     assert public.status_code==206 and len(public.content)==16
     assert client.get(feed['items'][0]['poster_url']).headers['content-type']=='image/jpeg'

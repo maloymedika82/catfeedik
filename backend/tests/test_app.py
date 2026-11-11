@@ -156,6 +156,19 @@ def test_admin_video_history_includes_decided_videos(setup,monkeypatch):
     history=client.get('/api/admin/videos',headers=admin).json()
     assert history['items'][0]['id']==fid and history['items'][0]['status']=='REJECTED'
 
+def test_public_video_feed_without_map_or_city_filter(setup,monkeypatch):
+    client,factory=setup;headers=login(client)
+    uid=client.get('/api/me',headers=headers).json()['id']
+    first,_=seed_feeding(factory,uid)
+    second,_=seed_feeding(factory,uid,1)
+    admin=admin_headers(client,factory,monkeypatch)
+    for fid in (first,second):
+        assert client.post(f'/api/admin/feedings/{fid}/decision',headers=admin,
+            json={'decision':'APPROVED','reason':'Кормление подтверждено'}).status_code==200
+    assert {item['id'] for item in client.get('/api/feed').json()['items']}=={first,second}
+    assert len(client.get('/api/feed?city_id=524901').json()['items'])==2
+    assert client.get('/api/feed?city_id=other').json()['items']==[]
+
 def test_missing_storage_does_not_create_feeding(setup,monkeypatch):
     client,factory=setup;headers=login(client)
     from fastapi import HTTPException

@@ -473,11 +473,11 @@ def private_media(feeding_id:str,db: DB,download:bool=False,
 
 
 @app.get('/api/feed')
-def public_feed(db: DB,city_id:str,offset:int=0,limit:int=10):
+def public_feed(db: DB,city_id:str='',offset:int=0,limit:int=10):
     if offset<0 or not 1<=limit<=30:
         raise HTTPException(422,'Недопустимая страница')
     rows=db.execute(select(Feeding,VideoAsset,User).join(VideoAsset,VideoAsset.feeding_id==Feeding.id)
-         .join(User,User.id==Feeding.user_id).where(VideoAsset.city_id==city_id,VideoAsset.status=='READY',
+         .join(User,User.id==Feeding.user_id).where((VideoAsset.city_id==city_id) if city_id else True,VideoAsset.status=='READY',
           Feeding.status=='APPROVED',User.frozen==False).order_by(Feeding.created_at.desc(),Feeding.id.desc())
          .offset(offset).limit(limit+1)).all()
     return {'items':[{'id':f.id,'name':u.name,'photo_url':u.photo_url,'city':f.city,'created_at':f.created_at,
