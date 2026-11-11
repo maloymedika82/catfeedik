@@ -185,3 +185,13 @@ html[data-theme=dark] .profile-video-history .history-row{background:var(--cf-so
 
 /* Sponsors revision: the approved-video feed is a full page, not a map dialog. */
 .feed-page{max-width:760px;margin:0 auto 24px;padding:16px}.feed-page .city-feed .feed-scroll{max-height:none;overflow:visible}.feed-page .city-feed .field{max-width:420px;margin:16px 0}.feed-page .feed-video-card{margin:16px 0}.app-dock button{min-height:56px}@media(max-width:640px){.feed-page{padding:12px 0;background:transparent;border:0;box-shadow:none}.feed-page .city-feed h2{font-size:25px}}
+/* Full-screen introduction follows PDF 11 without a tinted dialog over the app. */
+.onboarding-backdrop{position:fixed;inset:0;z-index:1000;display:flex;justify-content:center;padding:0;background:var(--cf-cream)}
+.onboarding-card{display:flex;flex-direction:column;width:min(100%,430px);height:100dvh;max-height:none;overflow:auto;padding:calc(12px + env(safe-area-inset-top)) 24px calc(16px + env(safe-area-inset-bottom));border-radius:0;box-shadow:none;background:var(--cf-cream);text-align:left}
+.onboarding-top{display:flex;justify-content:flex-end;min-height:44px}
+.onboarding-skip{position:static;min-height:44px;padding:8px 0;font-size:13px}
+.onboarding-card img{width:min(100%,350px);height:auto;max-height:240px;aspect-ratio:7/5;object-fit:contain;margin:22px auto 28px}
+.onboarding-copy{width:100%}.onboarding-copy h2{font-size:clamp(25px,7vw,28px);line-height:1.2;margin:0 0 8px}.onboarding-copy p{font-size:14px;line-height:1.55;min-height:0;margin:0 0 20px}
+.onboarding-progress{margin:0 0 4px}.onboarding-copy>small{display:block;text-align:center;color:var(--cf-muted);font-size:12px}
+.onboarding-actions{margin-top:auto;padding-top:24px}.onboarding-actions .primary{width:100%;min-height:54px;margin:0;border-radius:28px}.onboarding-back{display:block;margin:4px auto 0;min-height:44px}
+@media(max-height:650px){.onboarding-card img{max-height:140px;margin:6px auto 12px}.onboarding-copy p{margin-bottom:10px}.onboarding-actions{padding-top:10px}}
