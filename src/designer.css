@@ -195,3 +195,9 @@ html[data-theme=dark] .profile-video-history .history-row{background:var(--cf-so
 .onboarding-progress{margin:0 0 4px}.onboarding-copy>small{display:block;text-align:center;color:var(--cf-muted);font-size:12px}
 .onboarding-actions{margin-top:auto;padding-top:24px}.onboarding-actions .primary{width:100%;min-height:54px;margin:0;border-radius:28px}.onboarding-back{display:block;margin:4px auto 0;min-height:44px}
 @media(max-height:650px){.onboarding-card img{max-height:140px;margin:6px auto 12px}.onboarding-copy p{margin-bottom:10px}.onboarding-actions{padding-top:10px}}
+/* Manual theme selection must switch the hero image as well as the palette. */
+.designer-hero .hero-image-dark{display:none}
+html[data-theme=dark] .designer-hero .hero-image-light{display:none}
+html[data-theme=dark] .designer-hero .hero-image-dark{display:block}
+@media(prefers-color-scheme:dark){html:not([data-theme=light]):not([data-theme=dark]) .designer-hero .hero-image-light{display:none}html:not([data-theme=light]):not([data-theme=dark]) .designer-hero .hero-image-dark{display:block}}
+@media(min-width:641px){.designer-hero .hero-photo{position:absolute;inset:0;display:block;width:100%;height:100%;overflow:hidden}.designer-hero .hero-photo img{width:100%;height:100%;object-fit:cover}.designer-hero .hero-wordmark{position:absolute;z-index:2;top:24px;left:24px;width:180px;height:auto;max-height:46px;object-fit:contain}}
