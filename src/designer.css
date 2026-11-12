@@ -183,6 +183,13 @@ html[data-theme=dark] .moderation-queue-card{background:var(--cf-soft)}
 @media(max-width:640px){.profile-video-history .history-row{display:flex;flex-direction:column;align-items:stretch;gap:12px;padding:16px;margin:12px 0;border:1px solid var(--cf-border);border-radius:16px;background:#fff}.profile-video-history .history-row>span{max-width:none;text-align:left;order:-1}.profile-video-history .history-row .feeding-status{font-weight:700}.profile-video-history .history-row>div{width:100%}.profile-video-history .video-reason{display:block;padding:12px;margin-top:9px;border-radius:12px;background:#fbeae7;color:#9c352c;font-size:12px;line-height:1.4}.profile-video-history .own-video{max-width:none}.profile-video-history .own-video video{max-height:46dvh}}
 html[data-theme=dark] .profile-video-history .history-row{background:var(--cf-soft)}
 
+@media(min-width:641px){#root{display:flex;flex-direction:column;width:100%;min-width:0}#root>.header{order:0}#root>.app-dock{order:1;position:static;align-self:center;inset:auto;width:min(430px,100%);transform:none;margin:12px 0 0;border:1px solid var(--cf-border);border-radius:16px;box-shadow:none}#root>main{order:2;width:min(1180px,90%);min-width:0;max-width:none;margin-inline:auto}#root>footer{order:3}}
+@media(max-width:640px){main>.stats .stat{flex-direction:column;align-items:flex-start;min-width:0;padding:0 8px}main>.stats .stat:nth-child(2){border-right:0}main>.stats .stat small{overflow-wrap:anywhere}}
+main>.admin-entry{display:block;width:max-content;max-width:100%;margin-top:24px}
+html[data-theme=dark] .admin-tabs button:not([aria-current=page]){background:var(--cf-soft);color:var(--cf-text);border-color:var(--cf-border)}
+html[data-theme=dark] .admin-tabs [aria-current=page]{color:#15211c}
+@media(prefers-color-scheme:dark){html:not([data-theme=light]) .admin-tabs button:not([aria-current=page]){background:var(--cf-soft);color:var(--cf-text);border-color:var(--cf-border)}}
+
 /* Sponsors revision: the approved-video feed is a full page, not a map dialog. */
 .feed-page{max-width:760px;margin:0 auto 24px;padding:16px}.feed-page .city-feed .feed-scroll{max-height:none;overflow:visible}.feed-page .city-feed .field{max-width:420px;margin:16px 0}.feed-page .feed-video-card{margin:16px 0}.app-dock button{min-height:56px}@media(max-width:640px){.feed-page{padding:12px 0;background:transparent;border:0;box-shadow:none}.feed-page .city-feed h2{font-size:25px}}
 /* Full-screen introduction follows PDF 11 without a tinted dialog over the app. */
@@ -200,4 +207,4 @@ html[data-theme=dark] .profile-video-history .history-row{background:var(--cf-so
 html[data-theme=dark] .designer-hero .hero-image-light{display:none}
 html[data-theme=dark] .designer-hero .hero-image-dark{display:block}
 @media(prefers-color-scheme:dark){html:not([data-theme=light]):not([data-theme=dark]) .designer-hero .hero-image-light{display:none}html:not([data-theme=light]):not([data-theme=dark]) .designer-hero .hero-image-dark{display:block}}
-@media(min-width:641px){.designer-hero .hero-photo{position:absolute;inset:0;display:block;width:100%;height:100%;overflow:hidden}.designer-hero .hero-photo img{width:100%;height:100%;object-fit:cover}.designer-hero .hero-wordmark{position:absolute;z-index:2;top:24px;left:24px;width:180px;height:auto;max-height:46px;object-fit:contain}}
+@media(min-width:641px){.designer-hero .hero-photo{position:absolute;inset:0;display:block;width:100%;height:100%;overflow:hidden}.designer-hero .hero-photo img{width:100%;height:100%;object-fit:cover;object-position:center top}}
